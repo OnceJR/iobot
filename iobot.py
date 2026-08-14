@@ -1,6 +1,7 @@
 import asyncio
 import re
 import logging
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
@@ -12,11 +13,10 @@ from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
 TOKEN = "8948969120:AAFc7_l9YgMY8psuQtfdhGY44TbU-FwCkyY"
-BACKUP_CHANNEL_ID = -1004455894965  # <-- REEMPLAZA CON EL ID DE TU CANAL PRIVADO
+BACKUP_CHANNEL_ID = -1004455894965  # ID de tu canal de respaldo
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
-# Memoria temporal del bot
 active_groups = {}          
 authorized_users = {}       
 active_timers = {}          
@@ -27,11 +27,9 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 router = Router()
 
-# ================= ESTADOS FSM =================
 class BotStates(StatesGroup):
     waiting_for_id = State()
 
-# ================= FUNCIONES DE UTILIDAD =================
 async def is_admin(chat_id: int, user_id: int) -> bool:
     if chat_id in authorized_users and user_id in authorized_users[chat_id]:
         return True
@@ -96,13 +94,11 @@ async def link_group_panel(message: Message):
 
 @router.message(Command("info"))
 async def group_info_cmd(message: Message):
-    """Muestra estadísticas y detalles técnicos del grupo."""
     if message.chat.type in ["group", "supergroup"]:
         if await is_admin(message.chat.id, message.from_user.id):
             try:
                 chat = await message.bot.get_chat(message.chat.id)
                 member_count = await message.bot.get_chat_member_count(message.chat.id)
-                
                 bot_member = await message.bot.get_chat_member(message.chat.id, message.bot.id)
                 bot_is_admin = bot_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
                 status_admin_text = "✅ Sí (Con privilegios)" if bot_is_admin else "⚠️ No (Funciones limitadas)"
@@ -116,13 +112,10 @@ async def group_info_cmd(message: Message):
                     f"🤖 **Estado del Bot:** {status_admin_text}\n"
                     f"📝 **Descripción:** {chat.description or 'Sin descripción'}"
                 )
-
                 await message.reply(info_text, parse_mode="Markdown")
                 await message.delete()
             except Exception as e:
                 await message.reply(f"❌ Error al obtener la información: {e}")
-        else:
-            await message.reply("❌ No tienes permisos para usar este comando.")
 
 @router.message(Command("del"))
 async def delete_cmd(message: Message):
@@ -142,7 +135,6 @@ async def ban_cmd(message: Message):
             try:
                 await bot.ban_chat_member(message.chat.id, user_to_ban)
                 await message.reply_to_message.delete()
-                
                 confirm = await message.answer(f"🔨 Usuario baneado por {message.from_user.first_name}.")
                 await message.delete()
                 await asyncio.sleep(5)
@@ -176,11 +168,6 @@ async def unban_cmd(message: Message):
                 await message.delete()
                 await asyncio.sleep(3)
                 await err.delete()
-        else:
-            err = await message.answer("⚠️ Uso incorrecto. Responde a un mensaje o usa: `/unban ID`", parse_mode="Markdown")
-            await message.delete()
-            await asyncio.sleep(4)
-            await err.delete()
 
 # ================= CHAT PRIVADO (PANEL Y ESTADOS) =================
 
@@ -312,13 +299,10 @@ async def countdown_task(group_id: int, minutes: int):
 async def settimer_cb(callback: CallbackQuery):
     _, group_id, mins = callback.data.split("_")
     group_id, minutes = int(group_id), int(mins)
-    
     if group_id in active_timers:
         active_timers[group_id].cancel()
-        
     task = asyncio.create_task(countdown_task(group_id, minutes))
     active_timers[group_id] = task
-    
     await callback.message.edit_text(f"✅ **Temporizador iniciado.**\nEl grupo será destruido en {minutes} min.", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("canceltimer_"))
@@ -345,7 +329,7 @@ async def nuke_chat_cb(callback: CallbackQuery):
     except:
         await callback.answer("Error al ejecutar la secuencia.", show_alert=True)
 
-# ================= FILTRO GLOBAL (ANTI-LINKS Y RESPALDO) =================
+# ================= FILTRO GLOBAL =================
 
 @router.message()
 async def group_messages_processor(message: Message):
@@ -363,17 +347,29 @@ async def group_messages_processor(message: Message):
             message.photo or message.video or message.document or 
             message.audio or message.voice or message.video_note
         )
-        
         if is_media:
             try:
                 await message.copy_to(BACKUP_CHANNEL_ID)
             except Exception as e:
                 logging.error(f"Error copiando al canal de respaldo: {e}")
 
+# ================= SERVIDOR WEB FALSO PARA RENDER =================
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
+    await site.start()
+
 # ================= EJECUCIÓN PRINCIPAL =================
 async def main():
     dp.include_router(router)
-    print("🤖 Bot Todo-en-Uno iniciado y corriendo...")
+    await web_server() # Inicia el servidor web falso para mantener vivo el Web Service en Render
+    print("🤖 Bot Web Service iniciado y corriendo...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
