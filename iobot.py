@@ -12,14 +12,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
-TOKEN = "8948969120:AAFc7_l9YgMY8psuQtfdhGY44TbU-FwCkyY"
-BACKUP_CHANNEL_ID = -1004455894965  # ID de tu canal de respaldo
+TOKEN = "8615641625:AAFusJsIW5jbXS9i0MtEM1Zb2t7qipCz5bg"
+BACKUP_CHANNEL_ID = -1004455894965  # <-- REEMPLAZA CON EL ID DE TU CANAL PRIVADO UNICO
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
 active_groups = {}          
 authorized_users = {}       
-active_timers = {}          
 
 # ================= INICIALIZACIÓN =================
 logging.basicConfig(level=logging.INFO)
@@ -48,28 +47,7 @@ def get_main_keyboard(group_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="👥 Autorizar ID", callback_data=f"addid_{group_id}"),
-            InlineKeyboardButton(text="⏱️ Programar Cierre", callback_data=f"timer_{group_id}")
-        ],
-        [
-            InlineKeyboardButton(text="💣 Destrucción Inmediata", callback_data=f"nuke_{group_id}")
-        ],
-        [
             InlineKeyboardButton(text="ℹ️ Ayuda", callback_data=f"help_{group_id}")
-        ]
-    ])
-
-def get_timer_keyboard(group_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="10 Min", callback_data=f"settimer_{group_id}_10"),
-            InlineKeyboardButton(text="20 Min", callback_data=f"settimer_{group_id}_20"),
-            InlineKeyboardButton(text="30 Min", callback_data=f"settimer_{group_id}_30")
-        ],
-        [
-            InlineKeyboardButton(text="❌ Cancelar Temporizador", callback_data=f"canceltimer_{group_id}")
-        ],
-        [
-            InlineKeyboardButton(text="⬅️ Volver", callback_data=f"back_{group_id}")
         ]
     ])
 
@@ -99,17 +77,12 @@ async def group_info_cmd(message: Message):
             try:
                 chat = await message.bot.get_chat(message.chat.id)
                 member_count = await message.bot.get_chat_member_count(message.chat.id)
-                bot_member = await message.bot.get_chat_member(message.chat.id, message.bot.id)
-                bot_is_admin = bot_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-                status_admin_text = "✅ Sí (Con privilegios)" if bot_is_admin else "⚠️ No (Funciones limitadas)"
-
+                
                 info_text = (
                     f"📊 **Información del Grupo**\n\n"
                     f"🏷️ **Nombre:** {chat.title}\n"
                     f"🆔 **ID del Grupo:** `{chat.id}`\n"
                     f"👥 **Miembros Totales:** {member_count}\n"
-                    f"🔗 **Enlace Público:** {chat.invite_link or 'No disponible / Es privado'}\n"
-                    f"🤖 **Estado del Bot:** {status_admin_text}\n"
                     f"📝 **Descripción:** {chat.description or 'Sin descripción'}"
                 )
                 await message.reply(info_text, parse_mode="Markdown")
@@ -168,6 +141,20 @@ async def unban_cmd(message: Message):
                 await message.delete()
                 await asyncio.sleep(3)
                 await err.delete()
+
+# ================= COMANDO REPETIR Y BORRAR (/s O .s) =================
+@router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
+async def repeat_cmd(message: Message):
+    if message.chat.type in ["group", "supergroup"]:
+        if await is_admin(message.chat.id, message.from_user.id):
+            # Extraemos todo lo que haya después de los 3 primeros caracteres ("/s " o ".s ")
+            text_to_send = message.text[3:].strip()
+            if text_to_send:
+                try:
+                    await message.answer(text_to_send)
+                    await message.delete()
+                except:
+                    pass
 
 # ================= CHAT PRIVADO (PANEL Y ESTADOS) =================
 
@@ -231,11 +218,11 @@ async def help_cb(callback: CallbackQuery):
     help_text = (
         "📚 **Guía de Uso del Bot:**\n\n"
         "🔸 **Anti-Links:** Borra automáticamente mensajes con enlaces.\n"
-        "🔸 **Respaldo:** Copia fotos/videos enviados al grupo directo al canal.\n"
-        "🔸 **/info:** Muestra estadísticas y detalles técnicos del grupo.\n"
+        "🔸 **Respaldo Único:** Copia multimedia al canal añadiendo el nombre del grupo.\n"
+        "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
+        "🔸 **/info:** Muestra estadísticas del grupo.\n"
         "🔸 **/del, /ban y /unban:** Responde a mensajes para borrar, expulsar o desbanear.\n"
-        "🔸 **Autorizar ID:** Permite a otros usuarios evadir reglas y usar comandos.\n"
-        "🔸 **Programar Cierre:** Inicia una cuenta regresiva para la autodestrucción."
+        "🔸 **Autorizar ID:** Permite a otros usuarios evadir reglas y usar comandos."
     )
     await callback.message.edit_text(help_text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
 
@@ -271,69 +258,12 @@ async def addid_cb(callback: CallbackQuery, state: FSMContext):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data.startswith("timer_"))
-async def timer_menu_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
-    await callback.message.edit_text("⏱️ **Selecciona el tiempo para eliminar el grupo:**", reply_markup=get_timer_keyboard(group_id), parse_mode="Markdown")
-
-async def countdown_task(group_id: int, minutes: int):
-    try:
-        msg = await bot.send_message(group_id, f"⚠️ **El grupo será eliminado en {minutes} minutos.**", parse_mode="Markdown")
-        if minutes > 1:
-            await asyncio.sleep((minutes - 1) * 60)
-            await msg.edit_text("⚠️ **El grupo será eliminado en 1 minuto.**", parse_mode="Markdown")
-            await asyncio.sleep(55)
-        else:
-            await asyncio.sleep(55)
-
-        for i in range(5, 0, -1):
-            await msg.edit_text(f"⚠️ **ELIMINACIÓN EN {i}...**", parse_mode="Markdown")
-            await asyncio.sleep(1)
-            
-        await msg.edit_text("💥 **ELIMINANDO...**", parse_mode="Markdown")
-        await bot.leave_chat(group_id)
-    except asyncio.CancelledError:
-        await bot.send_message(group_id, "🛑 **Autodestrucción cancelada.**", parse_mode="Markdown")
-
-@router.callback_query(F.data.startswith("settimer_"))
-async def settimer_cb(callback: CallbackQuery):
-    _, group_id, mins = callback.data.split("_")
-    group_id, minutes = int(group_id), int(mins)
-    if group_id in active_timers:
-        active_timers[group_id].cancel()
-    task = asyncio.create_task(countdown_task(group_id, minutes))
-    active_timers[group_id] = task
-    await callback.message.edit_text(f"✅ **Temporizador iniciado.**\nEl grupo será destruido en {minutes} min.", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
-
-@router.callback_query(F.data.startswith("canceltimer_"))
-async def canceltimer_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
-    if group_id in active_timers:
-        active_timers[group_id].cancel()
-        del active_timers[group_id]
-        await callback.message.edit_text("🛑 **Temporizador cancelado.**", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
-    else:
-        await callback.answer("No hay ningún temporizador activo.", show_alert=True)
-
-@router.callback_query(F.data.startswith("nuke_"))
-async def nuke_chat_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
-    try:
-        await bot.set_chat_permissions(group_id, ChatPermissions(can_send_messages=False))
-        msg = await bot.send_message(group_id, "⚠️ **ELIMINACIÓN INMEDIATA...**", parse_mode="Markdown")
-        for i in range(3, 0, -1):
-            await msg.edit_text(f"⚠️ **ELIMINACIÓN EN {i}...**", parse_mode="Markdown")
-            await asyncio.sleep(1)
-        await bot.leave_chat(group_id)
-        await callback.message.edit_text("✅ **Grupo destruido con éxito.**", reply_markup=None, parse_mode="Markdown")
-    except:
-        await callback.answer("Error al ejecutar la secuencia.", show_alert=True)
-
 # ================= FILTRO GLOBAL =================
 
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
+        # Filtro de enlaces
         content = message.text or message.caption
         if content and LINK_REGEX.search(content):
             if not await is_admin(message.chat.id, message.from_user.id):
@@ -343,15 +273,31 @@ async def group_messages_processor(message: Message):
                 except:
                     pass
         
+        # Filtro de Respaldo Multimedia
         is_media = (
             message.photo or message.video or message.document or 
-            message.audio or message.voice or message.video_note
+            message.audio or message.voice or message.animation
         )
+        
         if is_media:
             try:
-                await message.copy_to(BACKUP_CHANNEL_ID)
+                # Obtenemos el texto original (si tiene) y le agregamos la firma del grupo
+                original_caption = message.caption or ""
+                group_signature = f"📌 Enviado desde: {message.chat.title}"
+                
+                if original_caption:
+                    new_caption = f"{original_caption}\n\n{group_signature}"
+                else:
+                    new_caption = group_signature
+
+                # Solo pasamos la nueva descripción a los tipos de mensaje que lo soportan
+                kwargs = {}
+                if not message.sticker and not message.video_note:
+                     kwargs['caption'] = new_caption
+
+                await message.copy_to(BACKUP_CHANNEL_ID, **kwargs)
             except Exception as e:
-                logging.error(f"Error copiando al canal de respaldo: {e}")
+                logging.error(f"Error copiando al canal: {e}")
 
 # ================= SERVIDOR WEB FALSO PARA RENDER =================
 async def handle(request):
@@ -368,7 +314,7 @@ async def web_server():
 # ================= EJECUCIÓN PRINCIPAL =================
 async def main():
     dp.include_router(router)
-    await web_server() # Inicia el servidor web falso para mantener vivo el Web Service en Render
+    await web_server()
     print("🤖 Bot Web Service iniciado y corriendo...")
     await dp.start_polling(bot)
 
