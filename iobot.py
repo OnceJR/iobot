@@ -4,7 +4,8 @@ import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
+    InputMediaPhoto, InputMediaVideo, InputMediaDocument
 )
 from aiogram.filters import Command, CommandStart
 from aiogram.enums import ChatMemberStatus
@@ -19,6 +20,7 @@ LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
 active_groups = {}          
 authorized_users = {}       
+album_cache = {}  # Memoria temporal para agrupar álbumes multimedia
 
 # ================= INICIALIZACIÓN =================
 logging.basicConfig(level=logging.INFO)
@@ -113,10 +115,7 @@ async def ban_cmd(message: Message):
                 await asyncio.sleep(5)
                 await confirm.delete()
             except:
-                err = await message.answer("❌ No pude banear al usuario.")
-                await message.delete()
-                await asyncio.sleep(3)
-                await err.delete()
+                pass
 
 @router.message(Command("unban"))
 async def unban_cmd(message: Message):
@@ -136,18 +135,14 @@ async def unban_cmd(message: Message):
                 await message.delete()
                 await asyncio.sleep(5)
                 await confirm.delete()
-            except Exception as e:
-                err = await message.answer("❌ No pude desbanear al usuario.")
-                await message.delete()
-                await asyncio.sleep(3)
-                await err.delete()
+            except:
+                pass
 
 # ================= COMANDO REPETIR Y BORRAR (/s O .s) =================
 @router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
 async def repeat_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         if await is_admin(message.chat.id, message.from_user.id):
-            # Extraemos todo lo que haya después de los 3 primeros caracteres ("/s " o ".s ")
             text_to_send = message.text[3:].strip()
             if text_to_send:
                 try:
@@ -156,8 +151,7 @@ async def repeat_cmd(message: Message):
                 except:
                     pass
 
-# ================= CHAT PRIVADO (PANEL Y ESTADOS) =================
-
+# ================= CHAT PRIVADO =================
 @router.message(CommandStart())
 async def start_private_panel(message: Message, state: FSMContext):
     if message.chat.type == "private":
@@ -187,24 +181,16 @@ async def process_new_id(message: Message, state: FSMContext):
         authorized_users[group_id].add(new_id)
         
         await bot.edit_message_text(
-            f"✅ **ID {new_id} autorizado con éxito.**\n\nPanel Principal:",
+            f"✅ **ID {new_id} autorizado con éxito.**",
             chat_id=message.chat.id,
             message_id=panel_msg_id,
             reply_markup=get_main_keyboard(group_id),
             parse_mode="Markdown"
         )
     except ValueError:
-        await bot.edit_message_text(
-            "❌ **Error:** El ID debe ser numérico.\n\nPanel Principal:",
-            chat_id=message.chat.id,
-            message_id=panel_msg_id,
-            reply_markup=get_back_keyboard(group_id),
-            parse_mode="Markdown"
-        )
+        pass
     finally:
         await state.clear()
-
-# ================= CALLBACKS (BOTONES) =================
 
 @router.callback_query(F.data.startswith("back_"))
 async def back_cb(callback: CallbackQuery, state: FSMContext):
@@ -218,11 +204,10 @@ async def help_cb(callback: CallbackQuery):
     help_text = (
         "📚 **Guía de Uso del Bot:**\n\n"
         "🔸 **Anti-Links:** Borra automáticamente mensajes con enlaces.\n"
-        "🔸 **Respaldo Único:** Copia multimedia al canal añadiendo el nombre del grupo.\n"
+        "🔸 **Respaldo Único:** Copia fotos, videos y archivos al canal.\n"
         "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
         "🔸 **/info:** Muestra estadísticas del grupo.\n"
-        "🔸 **/del, /ban y /unban:** Responde a mensajes para borrar, expulsar o desbanear.\n"
-        "🔸 **Autorizar ID:** Permite a otros usuarios evadir reglas y usar comandos."
+        "🔸 **/del, /ban y /unban:** Comandos de moderación.\n"
     )
     await callback.message.edit_text(help_text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
 
@@ -233,7 +218,7 @@ async def close_chat_cb(callback: CallbackQuery):
         await bot.set_chat_permissions(group_id, ChatPermissions(can_send_messages=False))
         await callback.answer("Chat cerrado.", show_alert=True)
     except:
-        await callback.answer("Error de permisos.", show_alert=True)
+        pass
 
 @router.callback_query(F.data.startswith("open_"))
 async def open_chat_cb(callback: CallbackQuery):
@@ -244,19 +229,48 @@ async def open_chat_cb(callback: CallbackQuery):
         ))
         await callback.answer("Chat abierto.", show_alert=True)
     except:
-        await callback.answer("Error de permisos.", show_alert=True)
+        pass
 
 @router.callback_query(F.data.startswith("addid_"))
 async def addid_cb(callback: CallbackQuery, state: FSMContext):
     group_id = int(callback.data.split("_")[1])
     await state.set_state(BotStates.waiting_for_id)
     await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
+    await callback.message.edit_text("✍️ **Envía un mensaje con el ID numérico del usuario.**", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
+
+
+# ================= FUNCIONES DE ÁLBUM (NUEVO) =================
+async def process_album(media_group_id: str, chat_title: str):
+    """Espera a que lleguen todas las fotos/videos del álbum y las envía juntas al canal."""
+    await asyncio.sleep(3)  # Esperamos 3 segundos para asegurar que Telegram entregó todo
     
-    await callback.message.edit_text(
-        "✍️ **Envía un mensaje con el ID numérico del usuario.**",
-        reply_markup=get_back_keyboard(group_id),
-        parse_mode="Markdown"
-    )
+    if media_group_id not in album_cache:
+        return
+        
+    messages = album_cache.pop(media_group_id)
+    media_group = []
+    
+    for idx, msg in enumerate(messages):
+        caption = None
+        # Solo agregamos la firma del grupo al primer archivo del álbum para no saturar
+        if idx == 0:
+            orig_cap = msg.caption or ""
+            sig = f"📌 Enviado desde: {chat_title}"
+            caption = f"{orig_cap}\n\n{sig}" if orig_cap else sig
+        
+        if msg.photo:
+            media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption))
+        elif msg.video:
+            media_group.append(InputMediaVideo(media=msg.video.file_id, caption=caption))
+        elif msg.document:
+            media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption))
+            
+    if media_group:
+        try:
+            await bot.send_media_group(BACKUP_CHANNEL_ID, media=media_group)
+        except Exception as e:
+            logging.error(f"Error copiando álbum al canal: {e}")
+
 
 # ================= FILTRO GLOBAL =================
 
@@ -273,31 +287,29 @@ async def group_messages_processor(message: Message):
                 except:
                     pass
         
-        # Filtro de Respaldo Multimedia
-        is_media = (
-            message.photo or message.video or message.document or 
-            message.audio or message.voice or message.animation
-        )
-        
-        if is_media:
-            try:
-                # Obtenemos el texto original (si tiene) y le agregamos la firma del grupo
-                original_caption = message.caption or ""
-                group_signature = f"📌 Enviado desde: {message.chat.title}"
+        # Filtro de Respaldo Multimedia (SOLO fotos, videos y documentos)
+        if message.photo or message.video or message.document:
+            
+            # Si el mensaje forma parte de un álbum (múltiples fotos/videos)
+            if message.media_group_id:
+                group_id = message.media_group_id
+                if group_id not in album_cache:
+                    album_cache[group_id] = []
+                    # Disparamos la función que enviará el álbum tras 3 segundos
+                    asyncio.create_task(process_album(group_id, message.chat.title))
                 
-                if original_caption:
-                    new_caption = f"{original_caption}\n\n{group_signature}"
-                else:
-                    new_caption = group_signature
+                album_cache[group_id].append(message)
+            
+            # Si es una sola foto, video o archivo suelto
+            else:
+                try:
+                    original_caption = message.caption or ""
+                    group_signature = f"📌 Enviado desde: {message.chat.title}"
+                    new_caption = f"{original_caption}\n\n{group_signature}" if original_caption else group_signature
 
-                # Solo pasamos la nueva descripción a los tipos de mensaje que lo soportan
-                kwargs = {}
-                if not message.sticker and not message.video_note:
-                     kwargs['caption'] = new_caption
-
-                await message.copy_to(BACKUP_CHANNEL_ID, **kwargs)
-            except Exception as e:
-                logging.error(f"Error copiando al canal: {e}")
+                    await message.copy_to(BACKUP_CHANNEL_ID, caption=new_caption)
+                except Exception as e:
+                    logging.error(f"Error copiando archivo suelto al canal: {e}")
 
 # ================= SERVIDOR WEB FALSO PARA RENDER =================
 async def handle(request):
