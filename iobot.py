@@ -12,8 +12,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
-TOKEN = "8615641625:AAFusJsIW5jbXS9i0MtEM1Zb2t7qipCz5bg"
-BACKUP_CHANNEL_ID = -1004455894965  # <-- REEMPLAZA CON EL ID DE TU CANAL PRIVADO UNICO
+TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
+BACKUP_CHANNEL_ID = -1003986866749  # <-- REEMPLAZA CON EL ID DE TU CANAL PRIVADO UNICO
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
