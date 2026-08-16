@@ -14,13 +14,17 @@ from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
 TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
-BACKUP_CHANNEL_ID = -1003986866749  # <-- REEMPLAZA CON EL ID DE TU CANAL PRIVADO UNICO
+BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
 active_groups = {}          
 authorized_users = {}       
 album_cache = {}  # Memoria temporal para agrupar álbumes multimedia
+
+# Cachés para nuevas funciones
+promoted_contributors = set()  # Guarda tuplas (chat_id, user_id)
+media_counts = {}              # Conteo de archivos por usuario {user_id: {"name": str, "count": int}}
 
 # ================= INICIALIZACIÓN =================
 logging.basicConfig(level=logging.INFO)
@@ -92,6 +96,7 @@ async def group_info_cmd(message: Message):
             except Exception as e:
                 await message.reply(f"❌ Error al obtener la información: {e}")
 
+# --- COMANDOS DE MODERACIÓN ---
 @router.message(Command("del"))
 async def delete_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
@@ -138,7 +143,7 @@ async def unban_cmd(message: Message):
             except:
                 pass
 
-# ================= COMANDO REPETIR Y BORRAR (/s O .s) =================
+# --- COMANDO REPETIR Y BORRAR (/s O .s) ---
 @router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
 async def repeat_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
@@ -151,7 +156,30 @@ async def repeat_cmd(message: Message):
                 except:
                     pass
 
-# ================= CHAT PRIVADO =================
+# --- COMANDOS DE CONTEO (ESTADÍSTICAS) ---
+@router.message(Command("aportes"))
+async def check_stats_cmd(message: Message):
+    if message.chat.type in ["group", "supergroup"]:
+        target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+        data = media_counts.get(target.id, {"count": 0})
+        await message.reply(
+            f"📊 **{target.first_name}** ha aportado **{data['count']}** archivos multimedia al grupo.", 
+            parse_mode="Markdown"
+        )
+
+@router.message(Command("topaportes"))
+async def top_stats_cmd(message: Message):
+    if not media_counts:
+        return await message.reply("📉 Aún no hay aportes registrados en esta sesión.")
+    
+    sorted_counts = sorted(media_counts.values(), key=lambda x: x["count"], reverse=True)[:10]
+    text = "🏆 **Top 10 Aportadores:**\n\n"
+    for i, data in enumerate(sorted_counts, 1):
+        text += f"{i}. {data['name']} - {data['count']} aportes\n"
+    
+    await message.reply(text, parse_mode="Markdown")
+
+# ================= CHAT PRIVADO (PANEL) =================
 @router.message(CommandStart())
 async def start_private_panel(message: Message, state: FSMContext):
     if message.chat.type == "private":
@@ -205,6 +233,7 @@ async def help_cb(callback: CallbackQuery):
         "📚 **Guía de Uso del Bot:**\n\n"
         "🔸 **Anti-Links:** Borra automáticamente mensajes con enlaces.\n"
         "🔸 **Respaldo Único:** Copia fotos, videos y archivos al canal.\n"
+        "🔸 **Conteo:** Usa `/aportes` o `/topaportes` para ver estadísticas.\n"
         "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
         "🔸 **/info:** Muestra estadísticas del grupo.\n"
         "🔸 **/del, /ban y /unban:** Comandos de moderación.\n"
@@ -238,11 +267,10 @@ async def addid_cb(callback: CallbackQuery, state: FSMContext):
     await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
     await callback.message.edit_text("✍️ **Envía un mensaje con el ID numérico del usuario.**", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
 
-
-# ================= FUNCIONES DE ÁLBUM (NUEVO) =================
+# ================= FUNCIONES DE ÁLBUM =================
 async def process_album(media_group_id: str, chat_title: str):
     """Espera a que lleguen todas las fotos/videos del álbum y las envía juntas al canal."""
-    await asyncio.sleep(3)  # Esperamos 3 segundos para asegurar que Telegram entregó todo
+    await asyncio.sleep(3)  
     
     if media_group_id not in album_cache:
         return
@@ -252,7 +280,7 @@ async def process_album(media_group_id: str, chat_title: str):
     
     for idx, msg in enumerate(messages):
         caption = None
-        # Solo agregamos la firma del grupo al primer archivo del álbum para no saturar
+        # Solo agregamos la firma al primer archivo del álbum
         if idx == 0:
             orig_cap = msg.caption or ""
             sig = f"📌 Enviado desde: {chat_title}"
@@ -271,13 +299,11 @@ async def process_album(media_group_id: str, chat_title: str):
         except Exception as e:
             logging.error(f"Error copiando álbum al canal: {e}")
 
-
 # ================= FILTRO GLOBAL =================
-
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
-        # Filtro de enlaces
+        # 1. Filtro de enlaces (Anti-Spam)
         content = message.text or message.caption
         if content and LINK_REGEX.search(content):
             if not await is_admin(message.chat.id, message.from_user.id):
@@ -287,20 +313,48 @@ async def group_messages_processor(message: Message):
                 except:
                     pass
         
-        # Filtro de Respaldo Multimedia (SOLO fotos, videos y documentos)
+        # 2. Filtro de Respaldo Multimedia (SOLO fotos, videos y documentos)
         if message.photo or message.video or message.document:
+            user_id = message.from_user.id
+            chat_id = message.chat.id
             
-            # Si el mensaje forma parte de un álbum (múltiples fotos/videos)
+            # --- LÓGICA DE CONTEO Y ETIQUETA ---
+            if user_id not in media_counts:
+                media_counts[user_id] = {"name": message.from_user.first_name, "count": 0}
+            media_counts[user_id]["count"] += 1
+            
+            # Promover a "Aportador" sutilmente si no es admin
+            if not await is_admin(chat_id, user_id):
+                if (chat_id, user_id) not in promoted_contributors:
+                    try:
+                        # Damos el permiso mínimo necesario para un custom title
+                        await bot.promote_chat_member(
+                            chat_id, user_id, 
+                            can_manage_chat=True,
+                            can_change_info=False,
+                            can_delete_messages=False,
+                            can_invite_users=False,
+                            can_restrict_members=False,
+                            can_pin_messages=False,
+                            can_manage_video_chats=False,
+                            can_promote_members=False
+                        )
+                        await bot.set_chat_administrator_custom_title(chat_id, user_id, "Aportador")
+                        promoted_contributors.add((chat_id, user_id))
+                    except Exception as e:
+                        logging.error(f"No se pudo promover a Aportador al usuario {user_id}: {e}")
+
+            # --- LÓGICA DE RESPALDO MULTIMEDIA ---
+            # Si forma parte de un álbum
             if message.media_group_id:
                 group_id = message.media_group_id
                 if group_id not in album_cache:
                     album_cache[group_id] = []
-                    # Disparamos la función que enviará el álbum tras 3 segundos
                     asyncio.create_task(process_album(group_id, message.chat.title))
                 
                 album_cache[group_id].append(message)
             
-            # Si es una sola foto, video o archivo suelto
+            # Si es suelto (no álbum)
             else:
                 try:
                     original_caption = message.caption or ""
@@ -309,11 +363,11 @@ async def group_messages_processor(message: Message):
 
                     await message.copy_to(BACKUP_CHANNEL_ID, caption=new_caption)
                 except Exception as e:
-                    logging.error(f"Error copiando archivo suelto al canal: {e}")
+                    logging.error(f"Error copiando archivo suelto: {e}")
 
 # ================= SERVIDOR WEB FALSO PARA RENDER =================
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is running smoothly!")
 
 async def web_server():
     app = web.Application()
@@ -326,8 +380,10 @@ async def web_server():
 # ================= EJECUCIÓN PRINCIPAL =================
 async def main():
     dp.include_router(router)
-    await web_server()
-    print("🤖 Bot Web Service iniciado y corriendo...")
+    # Ejecutamos el server aiohttp en background
+    asyncio.create_task(web_server())
+    print("🤖 Bot Web Service iniciado y corriendo en puerto 10000...")
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
