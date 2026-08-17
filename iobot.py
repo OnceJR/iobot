@@ -16,6 +16,9 @@ from aiogram.fsm.state import State, StatesGroup
 TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
 BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
+# NUEVO: Lista de IDs de usuarios designados (Super Admins)
+DESIGNATED_USERS = {8983189714, 8764734838}
+
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
 active_groups = {}          
@@ -36,8 +39,15 @@ class BotStates(StatesGroup):
     waiting_for_id = State()
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
+    # 1. NUEVO: Verificar si es un usuario designado (ignora si es admin en el grupo o no)
+    if user_id in DESIGNATED_USERS:
+        return True
+        
+    # 2. Verificar si fue autorizado por el panel temporal
     if chat_id in authorized_users and user_id in authorized_users[chat_id]:
         return True
+        
+    # 3. Verificar en Telegram si es administrador o creador del grupo
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
@@ -280,7 +290,6 @@ async def process_album(media_group_id: str, chat_title: str):
     
     for idx, msg in enumerate(messages):
         caption = None
-        # Solo agregamos la firma al primer archivo del álbum
         if idx == 0:
             orig_cap = msg.caption or ""
             sig = f"📌 Enviado desde: {chat_title}"
@@ -323,11 +332,10 @@ async def group_messages_processor(message: Message):
                 media_counts[user_id] = {"name": message.from_user.first_name, "count": 0}
             media_counts[user_id]["count"] += 1
             
-            # Promover a "Aportador" sutilmente si no es admin
+            # Promover a "Aportador" sutilmente si no es admin (los designados cuentan como admin y se saltan esto)
             if not await is_admin(chat_id, user_id):
                 if (chat_id, user_id) not in promoted_contributors:
                     try:
-                        # Damos el permiso mínimo necesario para un custom title
                         await bot.promote_chat_member(
                             chat_id, user_id, 
                             can_manage_chat=True,
@@ -345,7 +353,6 @@ async def group_messages_processor(message: Message):
                         logging.error(f"No se pudo promover a Aportador al usuario {user_id}: {e}")
 
             # --- LÓGICA DE RESPALDO MULTIMEDIA ---
-            # Si forma parte de un álbum
             if message.media_group_id:
                 group_id = message.media_group_id
                 if group_id not in album_cache:
@@ -354,7 +361,6 @@ async def group_messages_processor(message: Message):
                 
                 album_cache[group_id].append(message)
             
-            # Si es suelto (no álbum)
             else:
                 try:
                     original_caption = message.caption or ""
