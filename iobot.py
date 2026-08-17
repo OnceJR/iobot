@@ -16,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
 BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
-# NUEVO: Lista de IDs de usuarios designados (Super Admins)
+# Lista de IDs de usuarios designados (Super Admins)
 DESIGNATED_USERS = {8983189714, 8764734838}
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
@@ -39,7 +39,7 @@ class BotStates(StatesGroup):
     waiting_for_id = State()
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
-    # 1. NUEVO: Verificar si es un usuario designado (ignora si es admin en el grupo o no)
+    # 1. Verificar si es un usuario designado (ignora si es admin en el grupo o no)
     if user_id in DESIGNATED_USERS:
         return True
         
@@ -153,6 +153,22 @@ async def unban_cmd(message: Message):
             except:
                 pass
 
+# --- NUEVO: COMANDO PARA FIJAR MENSAJES (/pin) ---
+@router.message(Command("pin"))
+async def pin_cmd(message: Message):
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
+        if message.reply_to_message:
+            try:
+                # Fija el mensaje al que se está respondiendo
+                await bot.pin_chat_message(
+                    chat_id=message.chat.id, 
+                    message_id=message.reply_to_message.message_id
+                )
+                # Borramos el comando /pin para mantener limpio el chat
+                await message.delete()
+            except Exception as e:
+                logging.error(f"No se pudo fijar el mensaje: {e}")
+
 # --- COMANDO REPETIR Y BORRAR (/s O .s) ---
 @router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
 async def repeat_cmd(message: Message):
@@ -247,6 +263,7 @@ async def help_cb(callback: CallbackQuery):
         "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
         "🔸 **/info:** Muestra estadísticas del grupo.\n"
         "🔸 **/del, /ban y /unban:** Comandos de moderación.\n"
+        "🔸 **/pin:** Fija un mensaje respondiendo a él.\n"
     )
     await callback.message.edit_text(help_text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
 
@@ -332,7 +349,7 @@ async def group_messages_processor(message: Message):
                 media_counts[user_id] = {"name": message.from_user.first_name, "count": 0}
             media_counts[user_id]["count"] += 1
             
-            # Promover a "Aportador" sutilmente si no es admin (los designados cuentan como admin y se saltan esto)
+            # Promover a "Aportador" sutilmente si no es admin
             if not await is_admin(chat_id, user_id):
                 if (chat_id, user_id) not in promoted_contributors:
                     try:
