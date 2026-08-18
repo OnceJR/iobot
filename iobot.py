@@ -29,6 +29,9 @@ album_cache = {}  # Memoria temporal para agrupar álbumes multimedia
 promoted_contributors = set()  
 media_counts = {}              
 
+# NUEVO: Cola de envíos segura para evitar bloqueos de Telegram por FloodWait
+backup_queue = asyncio.Queue()
+
 # Diccionarios de mapeo para la nueva UI de Permisos
 PERM_MAPPING = {
     "msg": ("can_send_messages", "Mensajes"),
@@ -113,6 +116,23 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
     
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# ================= WORKER (COLA DE ENVÍOS SEGURA) =================
+async def backup_worker():
+    """Este proceso corre en segundo plano enviando los archivos 1x1 para no saturar a Telegram"""
+    while True:
+        task = await backup_queue.get()
+        try:
+            if task['type'] == 'album':
+                await bot.send_media_group(BACKUP_CHANNEL_ID, media=task['media'])
+                await asyncio.sleep(4)  # Espera 4 segs después de mandar un álbum entero
+            elif task['type'] == 'single':
+                await task['message'].copy_to(BACKUP_CHANNEL_ID, caption=task['caption'])
+                await asyncio.sleep(2)  # Espera 2 segs después de mandar un archivo suelto
+        except Exception as e:
+            logging.error(f"Error enviando archivo desde la cola: {e}")
+        finally:
+            backup_queue.task_done()
 
 # ================= COMANDOS EN GRUPO =================
 
@@ -260,7 +280,6 @@ async def open_chat_cb(callback: CallbackQuery):
         await callback.answer("✅ Chat abierto globalmente.", show_alert=True)
     except: pass
 
-# --- NUEVO: GESTIÓN DE PERMISOS GRANULARES ---
 @router.callback_query(F.data.startswith("perms_"))
 async def show_perms_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
@@ -284,20 +303,17 @@ async def toggle_perm_cb(callback: CallbackQuery):
         current_perms = chat.permissions or ChatPermissions()
         perm_attr, _ = PERM_MAPPING[perm_key]
         
-        # Volcamos los permisos actuales a diccionario para modificar el que se tocó
         perms_dict = current_perms.model_dump(exclude_none=True)
         perms_dict[perm_attr] = not getattr(current_perms, perm_attr, False)
         
         new_perms = ChatPermissions(**perms_dict)
         await bot.set_chat_permissions(group_id, new_perms)
         
-        # Actualizamos el teclado visualmente
         keyboard = get_permissions_keyboard(group_id, new_perms)
         await callback.message.edit_reply_markup(reply_markup=keyboard)
     except Exception as e:
         await callback.answer("⚠️ No tengo permisos suficientes en el grupo para cambiar esto.", show_alert=True)
 
-# --- NUEVO: VER PERMISOS DEL BOT ---
 @router.callback_query(F.data.startswith("botperms_"))
 async def show_bot_perms_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
@@ -377,8 +393,8 @@ async def process_album(media_group_id: str, chat_title: str):
         elif msg.document: media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption))
             
     if media_group:
-        try: await bot.send_media_group(BACKUP_CHANNEL_ID, media=media_group)
-        except: pass
+        # En vez de enviarlo directo, lo mandamos a la cola
+        await backup_queue.put({'type': 'album', 'media': media_group})
 
 # ================= FILTRO GLOBAL =================
 @router.message()
@@ -422,12 +438,11 @@ async def group_messages_processor(message: Message):
                     asyncio.create_task(process_album(group_id, message.chat.title))
                 album_cache[group_id].append(message)
             else:
-                try:
-                    original_caption = message.caption or ""
-                    group_signature = f"📌 Enviado desde: {message.chat.title}"
-                    new_caption = f"{original_caption}\n\n{group_signature}" if original_caption else group_signature
-                    await message.copy_to(BACKUP_CHANNEL_ID, caption=new_caption)
-                except: pass
+                original_caption = message.caption or ""
+                group_signature = f"📌 Enviado desde: {message.chat.title}"
+                new_caption = f"{original_caption}\n\n{group_signature}" if original_caption else group_signature
+                # En vez de copiar directo, lo mandamos a la cola
+                await backup_queue.put({'type': 'single', 'message': message, 'caption': new_caption})
 
 # ================= SERVIDOR WEB FALSO PARA RENDER =================
 async def handle(request):
@@ -445,6 +460,7 @@ async def web_server():
 async def main():
     dp.include_router(router)
     asyncio.create_task(web_server())
+    asyncio.create_task(backup_worker())  # INICIAMOS LA COLA EN SEGUNDO PLANO
     print("🤖 Bot Web Service iniciado y corriendo en puerto 10000...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
