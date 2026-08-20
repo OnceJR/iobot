@@ -13,8 +13,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
-TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
-BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
+TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
+BACKUP_CHANNEL_ID = -1003807518626  # ID DE TU CANAL PRIVADO UNICO
 
 # Lista de IDs de usuarios designados (Super Admins)
 DESIGNATED_USERS = {8983189714, 8764734838}
