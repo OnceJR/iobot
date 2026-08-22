@@ -477,9 +477,9 @@ async def group_messages_processor(message: Message):
                     prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
                 
                 try:
-                    # Cambiado al modelo gemini-2.5-flash (con cuota gratuita alta)
+                    # Actualizado al modelo gemini-3.6-flash requerido por la API actual
                     response = await ai_client.aio.models.generate_content(
-                        model='gemini-2.5-flash',
+                        model='gemini-3.6-flash',
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             system_instruction=INSTRUCCIONES_BOT
