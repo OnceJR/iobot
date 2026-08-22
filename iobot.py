@@ -58,10 +58,8 @@ Reglas de interacción:
 4. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace lo que dicen Constantin, Princi y Paulito, y que no sean pesados.
 """
 
-ai_model = genai.GenerativeModel(
-    model_name='gemini-1.5-flash-latest',
-    system_instruction=INSTRUCCIONES_BOT
-)
+# CAMBIO: Usamos el modelo universal que funciona en todas las versiones
+ai_model = genai.GenerativeModel('gemini-pro')
 
 # Diccionarios de mapeo para la nueva UI de Permisos
 PERM_MAPPING = {
@@ -479,8 +477,11 @@ async def group_messages_processor(message: Message):
                 if not prompt: 
                     prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
                 
+                # CAMBIO: Inyectamos la personalidad en cada consulta
+                prompt_secreto = f"{INSTRUCCIONES_BOT}\n\nEl usuario te dice lo siguiente: {prompt}"
+                
                 try:
-                    response = await ai_model.generate_content_async(prompt)
+                    response = await ai_model.generate_content_async(prompt_secreto)
                     await message.reply(text=response.text, parse_mode="Markdown")
                 except Exception as e:
                     logging.error(f"Error con la IA: {e}")
