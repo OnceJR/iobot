@@ -13,7 +13,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import google.generativeai as genai
+
+# IMPORTANTE: Nueva librería oficial de Google Gen AI
+from google import genai
+from google.genai import types
 
 # ================= CONFIGURACIÓN =================
 TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
@@ -39,8 +42,6 @@ media_counts = {}
 backup_queue = asyncio.Queue()
 
 # ================= INSTRUCCIONES DE LA IA (OTM BOSS) =================
-genai.configure(api_key=GEMINI_API_KEY)
-
 INSTRUCCIONES_BOT = """
 Eres "OTM Boss", la inteligencia artificial suprema y bot gestor del grupo de Telegram llamado "Imperio Otomano".
 Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, tienes un humor al límite (negro, sarcástico y picante) y respondes de forma muy clara y directa, sin rodeos ni amabilidad falsa.
@@ -58,8 +59,8 @@ Reglas de interacción:
 4. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace lo que dicen Constantin, Princi y Paulito, y que no sean pesados.
 """
 
-# CAMBIO: Usamos el modelo universal que funciona en todas las versiones
-ai_model = genai.GenerativeModel('gemini-pro')
+# CAMBIO: Inicializamos el nuevo cliente oficial
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Diccionarios de mapeo para la nueva UI de Permisos
 PERM_MAPPING = {
@@ -473,15 +474,18 @@ async def group_messages_processor(message: Message):
                 await bot.send_chat_action(chat_id=message.chat.id, action="typing")
                 prompt = message.text.replace(f"@{bot_me.username}", "").strip()
                 
-                # Si solo lo etiquetaron sin decir nada
                 if not prompt: 
                     prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
                 
-                # CAMBIO: Inyectamos la personalidad en cada consulta
-                prompt_secreto = f"{INSTRUCCIONES_BOT}\n\nEl usuario te dice lo siguiente: {prompt}"
-                
                 try:
-                    response = await ai_model.generate_content_async(prompt_secreto)
+                    # CAMBIO: Envío usando el nuevo formato de la API con system instruction incorporado
+                    response = await ai_client.aio.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=INSTRUCCIONES_BOT
+                        )
+                    )
                     await message.reply(text=response.text, parse_mode="Markdown")
                 except Exception as e:
                     logging.error(f"Error con la IA: {e}")
