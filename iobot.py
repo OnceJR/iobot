@@ -59,7 +59,7 @@ Reglas de interacción:
 """
 
 ai_model = genai.GenerativeModel(
-    model_name='gemini-1.5-flash',
+    model_name='gemini-1.5-flash-latest',
     system_instruction=INSTRUCCIONES_BOT
 )
 
