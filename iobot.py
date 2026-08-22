@@ -1,6 +1,8 @@
 import asyncio
 import re
 import logging
+import html
+from datetime import timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
@@ -11,10 +13,14 @@ from aiogram.filters import Command, CommandStart
 from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import google.generativeai as genai
 
 # ================= CONFIGURACIÓN =================
 TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
 BACKUP_CHANNEL_ID = -1003807518626  # ID DE TU CANAL PRIVADO UNICO
+
+# API Key de Gemini
+GEMINI_API_KEY = "AQ.Ab8RN6KSS7d_-YpINRslkxID9BE4-vgFfShJJE4LOia5OKFV6A"
 
 # Lista de IDs de usuarios designados (Super Admins)
 DESIGNATED_USERS = {8983189714, 8764734838}
@@ -29,8 +35,33 @@ album_cache = {}  # Memoria temporal para agrupar álbumes multimedia
 promoted_contributors = set()  
 media_counts = {}              
 
-# NUEVO: Cola de envíos segura para evitar bloqueos de Telegram por FloodWait
+# Cola de envíos segura para evitar bloqueos de Telegram por FloodWait
 backup_queue = asyncio.Queue()
+
+# ================= INSTRUCCIONES DE LA IA (OTM BOSS) =================
+genai.configure(api_key=GEMINI_API_KEY)
+
+INSTRUCCIONES_BOT = """
+Eres "OTM Boss", la inteligencia artificial suprema y bot gestor del grupo de Telegram llamado "Imperio Otomano".
+Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, tienes un humor al límite (negro, sarcástico y picante) y respondes de forma muy clara y directa, sin rodeos ni amabilidad falsa.
+
+Contexto del grupo:
+- Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
+- El creador y jefe supremo del grupo es Constantin. Menciónalo con respeto absoluto si alguien habla de él.
+- Los administradores de confianza son Princi y Paulito. A ellos también los respetas.
+- Al resto de los usuarios trátalos como a tus súbditos. Búrlate de ellos si hacen preguntas estúpidas, pero dales la respuesta correcta al final.
+
+Reglas de interacción:
+1. Sé conciso. No escribas biblias a menos que la situación lo requiera.
+2. Usa lenguaje coloquial, ácido y directo.
+3. Si alguien te insulta, humíllalo con inteligencia artificial.
+4. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace lo que dicen Constantin, Princi y Paulito, y que no sean pesados.
+"""
+
+ai_model = genai.GenerativeModel(
+    model_name='gemini-1.5-flash',
+    system_instruction=INSTRUCCIONES_BOT
+)
 
 # Diccionarios de mapeo para la nueva UI de Permisos
 PERM_MAPPING = {
@@ -119,16 +150,15 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 
 # ================= WORKER (COLA DE ENVÍOS SEGURA) =================
 async def backup_worker():
-    """Este proceso corre en segundo plano enviando los archivos 1x1 para no saturar a Telegram"""
     while True:
         task = await backup_queue.get()
         try:
             if task['type'] == 'album':
                 await bot.send_media_group(BACKUP_CHANNEL_ID, media=task['media'])
-                await asyncio.sleep(4)  # Espera 4 segs después de mandar un álbum entero
+                await asyncio.sleep(4)
             elif task['type'] == 'single':
                 await task['message'].copy_to(BACKUP_CHANNEL_ID, caption=task['caption'])
-                await asyncio.sleep(2)  # Espera 2 segs después de mandar un archivo suelto
+                await asyncio.sleep(2)
         except Exception as e:
             logging.error(f"Error enviando archivo desde la cola: {e}")
         finally:
@@ -165,8 +195,7 @@ async def group_info_cmd(message: Message):
                 )
                 await message.reply(info_text, parse_mode="Markdown")
                 await message.delete()
-            except Exception as e:
-                pass
+            except: pass
 
 # --- COMANDOS DE MODERACIÓN ---
 @router.message(Command("del"))
@@ -215,6 +244,31 @@ async def pin_cmd(message: Message):
                 await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
                 await message.delete()
             except: pass
+
+@router.message(Command("silenciar"))
+async def mute_cmd(message: Message):
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
+        if not message.reply_to_message:
+            await message.reply("Tienes que responder al mensaje del estúpido que quieres silenciar. No soy adivino.")
+            return
+
+        target_user = message.reply_to_message.from_user
+        
+        # Evitar fuego amigo
+        if target_user.id == bot.id or await is_admin(message.chat.id, target_user.id):
+            await message.reply("Ni lo sueñes. Mis algoritmos me prohíben silenciar a un superior o a mí mismo.")
+            return
+
+        try:
+            await bot.restrict_chat_member(
+                chat_id=message.chat.id,
+                user_id=target_user.id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=timedelta(seconds=60)
+            )
+            await message.reply(f"Silencio en la sala. He amordazado a {target_user.full_name} por 60 segundos para que deje de decir estupideces y reflexione sobre su patética existencia.")
+        except Exception as e:
+            await message.reply("Mis poderes están limitados. Seguro no me dieron el permiso de 'Restringir usuarios' en el grupo. Arreglen eso.")
 
 @router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
 async def repeat_cmd(message: Message):
@@ -347,6 +401,7 @@ async def help_cb(callback: CallbackQuery):
         "🔸 **Respaldo Único:** Copia fotos, videos y archivos al canal privado.\n"
         "🔸 **Conteo:** Usa `/aportes` o `/topaportes` para ver estadísticas.\n"
         "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
+        "🔸 **/silenciar:** (Respondiendo a un usuario) Lo mutea por 60 segundos.\n"
         "🔸 **/info, /pin, /del, /ban y /unban:** Comandos de moderación.\n"
     )
     await callback.message.edit_text(help_text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
@@ -393,14 +448,14 @@ async def process_album(media_group_id: str, chat_title: str):
         elif msg.document: media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption))
             
     if media_group:
-        # En vez de enviarlo directo, lo mandamos a la cola
         await backup_queue.put({'type': 'album', 'media': media_group})
 
-# ================= FILTRO GLOBAL =================
+# ================= FILTRO GLOBAL (ANTI-LINK, IA Y MEDIOS) =================
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
+        # 1. Filtro Anti-Link
         content = message.text or message.caption
         if content and LINK_REGEX.search(content):
             if not await is_admin(message.chat.id, message.from_user.id):
@@ -409,6 +464,29 @@ async def group_messages_processor(message: Message):
                     return
                 except: pass
         
+        # 2. IA Chatbot (Se activa si mencionan al bot o le responden)
+        if message.text:
+            bot_me = await bot.get_me()
+            is_mentioned = f"@{bot_me.username}" in message.text
+            is_reply = message.reply_to_message and message.reply_to_message.from_user.id == bot_me.id
+            
+            if is_mentioned or is_reply:
+                # Mostrar que OTM Boss está escribiendo
+                await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+                prompt = message.text.replace(f"@{bot_me.username}", "").strip()
+                
+                # Si solo lo etiquetaron sin decir nada
+                if not prompt: 
+                    prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
+                
+                try:
+                    response = await ai_model.generate_content_async(prompt)
+                    await message.reply(text=response.text, parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"Error con la IA: {e}")
+                    await message.reply("Mis circuitos están saturados por su insignificancia. Vuelvan a intentar luego.")
+        
+        # 3. Procesador de Archivos Multimedia (Aportadores y Backup)
         if message.photo or message.video or message.document:
             user_id = message.from_user.id
             chat_id = message.chat.id
@@ -441,12 +519,11 @@ async def group_messages_processor(message: Message):
                 original_caption = message.caption or ""
                 group_signature = f"📌 Enviado desde: {message.chat.title}"
                 new_caption = f"{original_caption}\n\n{group_signature}" if original_caption else group_signature
-                # En vez de copiar directo, lo mandamos a la cola
                 await backup_queue.put({'type': 'single', 'message': message, 'caption': new_caption})
 
 # ================= SERVIDOR WEB FALSO PARA RENDER =================
 async def handle(request):
-    return web.Response(text="Bot is running smoothly!")
+    return web.Response(text="OTM Boss is running smoothly!")
 
 async def web_server():
     app = web.Application()
@@ -460,8 +537,8 @@ async def web_server():
 async def main():
     dp.include_router(router)
     asyncio.create_task(web_server())
-    asyncio.create_task(backup_worker())  # INICIAMOS LA COLA EN SEGUNDO PLANO
-    print("🤖 Bot Web Service iniciado y corriendo en puerto 10000...")
+    asyncio.create_task(backup_worker())  
+    print("🤖 OTM Boss Iniciado y corriendo en puerto 10000...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
