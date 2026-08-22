@@ -14,7 +14,7 @@ from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-# IMPORTANTE: Nueva librería oficial de Google Gen AI
+# Nueva librería oficial de Google Gen AI
 from google import genai
 from google.genai import types
 
@@ -59,7 +59,6 @@ Reglas de interacción:
 4. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace lo que dicen Constantin, Princi y Paulito, y que no sean pesados.
 """
 
-# CAMBIO: Inicializamos el nuevo cliente oficial
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Diccionarios de mapeo para la nueva UI de Permisos
@@ -478,9 +477,9 @@ async def group_messages_processor(message: Message):
                     prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
                 
                 try:
-                    # CAMBIO: Envío usando el nuevo formato de la API con system instruction incorporado
+                    # Actualizado al modelo gemini-3.6-flash solicitado por Google
                     response = await ai_client.aio.models.generate_content(
-                        model='gemini-2.5-flash',
+                        model='gemini-3.6-flash',
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             system_instruction=INSTRUCCIONES_BOT
