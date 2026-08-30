@@ -149,7 +149,7 @@ async def get_ia_response(message: Message, user_name: str) -> str:
 
         # Usamos model_name actualizado y limitamos los tokens de salida para ahorrar cuota
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  
+            model_name='gemini-3.6-flash',  
             system_instruction=system_prompt,
             tools=tools_config
         )
