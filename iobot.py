@@ -128,7 +128,7 @@ async def get_ia_response(prompt: str, user_name: str) -> str:
     """Envía la solicitud a OpenRouter y devuelve la respuesta generada con la personalidad."""
     try:
         response = await ia_client.chat.completions.create(
-            model="meta-llama/llama-3.3-70b-instruct:free",  # <-- CAMBIO: Modelo gratuito de OpenRouter
+            model="google/gemma-2-9b-it:free",  # <-- CAMBIO: Modelo gratuito de OpenRouter
             messages=[
                 {"role": "system", "content": INSTRUCCIONES_BOT},
                 {"role": "user", "content": f"El usuario se llama {user_name} y dice: {prompt}"}
