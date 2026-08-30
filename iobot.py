@@ -123,20 +123,27 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# # ================= FUNCIONES DE IA (OPENROUTER MULTI-MODELO) =================
+# <-- CAMBIO: Inicializamos cliente con los HEADERS obligatorios de OpenRouter
+ia_client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": "https://t.me/otmbossbot", # OpenRouter exige esto
+        "X-Title": "OTM Boss Telegram Bot"    # OpenRouter exige esto
+    }
+)
 
-# Lista de los modelos gratuitos más estables de OpenRouter
+# Lista ACTUALIZADA de modelos gratuitos estables
 FREE_MODELS = [
-    "gryphe/mythomax-l2-13b:free",       # Extremadamente estable, excelente para roles/humor
-    "undi95/toppy-m-7b:free",            # Muy rápido y casi nunca se cae
-    "meta-llama/llama-3-8b-instruct:free", # Clásico de Meta, suele estar activo
-    "huggingfaceh4/zephyr-7b-beta:free", # Nunca lo quitan de la capa gratuita
-    "google/gemma-2-9b-it:free"          # Por si los servidores de Google vuelven
+    "qwen/qwen-2.5-7b-instruct:free",
+    "deepseek/deepseek-r1:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "undi95/toppy-m-7b:free"
 ]
 
 async def get_ia_response(prompt: str, user_name: str) -> str:
     """Envía la solicitud a OpenRouter rotando modelos si alguno falla."""
-    
     for model_name in FREE_MODELS:
         try:
             response = await ia_client.chat.completions.create(
@@ -151,12 +158,10 @@ async def get_ia_response(prompt: str, user_name: str) -> str:
             return response.choices[0].message.content
             
         except Exception as e:
-            # Si falla, imprimimos el error en consola pero NO nos detenemos.
-            logging.warning(f"⚠️ El modelo {model_name} falló o está apagado. Intentando el siguiente...")
-            continue  # Pasa automáticamente al siguiente modelo de la lista
+            logging.warning(f"⚠️ Modelo {model_name} falló. Intentando el siguiente...")
+            continue  
             
-    # Si el bucle termina y TODOS los modelos de la lista fallaron:
-    logging.error("Todos los servidores gratuitos de OpenRouter están caídos.")
+    logging.error("Todos los servidores de OpenRouter están caídos o bloqueando la conexión.")
     return "❌ Ustedes, simples mortales, han saturado las redes. Mi intelecto superior está inaccesible en este momento."
 
 # ================= FUNCIONES DE LIMPIEZA =================
