@@ -3,7 +3,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 from aiohttp import web
-from openai import AsyncOpenAI  # <-- CAMBIO: Importamos AsyncOpenAI
+import google.generativeai as genai  # <-- CAMBIO: Importamos la librería de Gemini
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
@@ -18,8 +18,11 @@ from aiogram.fsm.state import State, StatesGroup
 TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
 BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
-# API Key de OpenRouter
-OPENROUTER_API_KEY = "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"
+# API Key de Gemini (Google AI Studio)
+GEMINI_API_KEY = "AQ.Ab8RN6IQ0PYgioB4EWyJH-HnfGZuw7nJiqnF1OJygUYHJJDV8g"
+
+# Configurar Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 
 # Lista de IDs de usuarios designados (Super Admins)
 DESIGNATED_USERS = {8983189714, 8764734838}
@@ -41,7 +44,6 @@ Reglas de interacción:
 1. Sé conciso pero sumamente creativo e impredecible en cómo insultas o respondes.
 2. Si alguien te insulta, destrúyelo con humor negro e inteligencia superior.
 3. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace estrictamente lo que mandan los jefes y que dejen de llorar.
-4. Si necesitas información del mundo exterior o datos actuales, búscalos automáticamente.
 """
 
 active_groups = {}          
@@ -84,12 +86,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 router = Router()
 
-# <-- CAMBIO: Inicializamos cliente apuntando a OpenRouter
-ia_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
-
 class BotStates(StatesGroup):
     waiting_for_id = State()
 
@@ -123,46 +119,29 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# <-- CAMBIO: Inicializamos cliente con los HEADERS obligatorios de OpenRouter
-ia_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-    default_headers={
-        "HTTP-Referer": "https://t.me/otmbossbot", # OpenRouter exige esto
-        "X-Title": "OTM Boss Telegram Bot"    # OpenRouter exige esto
-    }
-)
-
-# Lista ACTUALIZADA de modelos gratuitos estables
-FREE_MODELS = [
-    "qwen/qwen-2.5-7b-instruct:free",
-    "deepseek/deepseek-r1:free",
-    "meta-llama/llama-3.1-8b-instruct:free",
-    "google/gemma-2-9b-it:free",
-    "undi95/toppy-m-7b:free"
-]
-
+# ================= FUNCIONES DE IA (GEMINI) =================
 async def get_ia_response(prompt: str, user_name: str) -> str:
-    """Envía la solicitud a OpenRouter rotando modelos si alguno falla."""
-    for model_name in FREE_MODELS:
-        try:
-            response = await ia_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": INSTRUCCIONES_BOT},
-                    {"role": "user", "content": f"El usuario se llama {user_name} y dice: {prompt}"}
-                ],
-                temperature=0.8,
-                max_tokens=1024
-            )
-            return response.choices[0].message.content
+    """Envía la solicitud a Gemini y devuelve la respuesta generada con la personalidad."""
+    try:
+        # Inicializamos el modelo con las instrucciones del sistema
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash',
+            system_instruction=INSTRUCCIONES_BOT
+        )
+        
+        mensaje_final = f"El usuario {user_name} dice: {prompt}"
+        
+        # Generamos la respuesta de forma asíncrona
+        response = await model.generate_content_async(mensaje_final)
+        
+        if response.text:
+            return response.text
+        else:
+            return "❌ Sus tonterías han bloqueado mi sistema de procesamiento."
             
-        except Exception as e:
-            logging.warning(f"⚠️ Modelo {model_name} falló. Intentando el siguiente...")
-            continue  
-            
-    logging.error("Todos los servidores de OpenRouter están caídos o bloqueando la conexión.")
-    return "❌ Ustedes, simples mortales, han saturado las redes. Mi intelecto superior está inaccesible en este momento."
+    except Exception as e:
+        logging.error(f"Error procesando solicitud IA Gemini: {e}")
+        return "❌ Mi intelecto superior está temporalmente inaccesible por culpa de ustedes."
 
 # ================= FUNCIONES DE LIMPIEZA =================
 async def execute_cleanup(chat_id: int, manual=False):
@@ -422,7 +401,7 @@ async def group_messages_processor(message: Message):
             try: await message.delete(); return
             except: pass
 
-        # 2. IA - Interacción Orgánica (OpenRouter)
+        # 2. IA - Interacción Orgánica (Gemini)
         if content:
             bot_user = await bot.me()
             is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.id == bot_user.id
