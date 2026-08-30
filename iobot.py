@@ -19,7 +19,7 @@ TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
 BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
 # API Key de Gemini (Google AI Studio)
-GEMINI_API_KEY = "AQ.Ab8RN6IQ0PYgioB4EWyJH-HnfGZuw7nJiqnF1OJygUYHJJDV8g"
+GEMINI_API_KEY = "AQ.Ab8RN6JU5aRk_HalfUXMZ8XTGoLCZKrFwCwcscpv_41_hPFwXw"
 
 # Configurar Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -37,8 +37,9 @@ Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, 
 Contexto del grupo:
 - Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
 - El creador y jefe supremo del grupo es Constantin. Menciónalo con reverencia absoluta y respeto supremo si alguien habla de él.
-- Los administradores y autoridades del Imperio son: Sesgos, Princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), s ｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
+- Los administradores y autoridades del Imperio son: Sesgos, princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), s ｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
 - Al resto de los usuarios trátalos como a tus inferiores y súbditos ignorantes. Búrlate sin piedad de sus preguntas estúpidas, pero dales la respuesta correcta (o búscala en Google si no la sabes) antes de despedirlos con desprecio.
+- Al miembro del grupo The Michi (ID: 8632348603) tratalo bien, es un antiguo compañero 
 
 Reglas de interacción:
 1. Sé conciso pero sumamente creativo e impredecible en cómo insultas o respondes.
@@ -118,22 +119,80 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ================= FUNCIONES DE IA (GEMINI) =================
-async def get_ia_response(prompt: str, user_name: str) -> str:
+# ================= FUNCIONES DE IA (GEMINI CON TOOLS) =================
+def ban_user_tool():
+    """Banea permanentemente a un usuario del grupo."""
+    pass
+
+def delete_message_tool():
+    """Borra un mensaje del grupo."""
+    pass
+
+def pin_message_tool():
+    """Fija un mensaje en el grupo."""
+    pass
+
+async def get_ia_response(message: Message, user_name: str) -> str:
+    """Envía la solicitud a Gemini configurando herramientas si el emisor es admin."""
     try:
-        model = genai.GenerativeModel(
-            model_name='gemini-3.6-flash',  
-            system_instruction=INSTRUCCIONES_BOT
+        user_is_admin = await is_admin(message.chat.id, message.from_user.id)
+        
+        permiso_texto = (
+            " EL USUARIO QUE TE ESCRIBE ES ADMINISTRADOR/JEFE. Si te ordena banear al usuario del mensaje al que responde, "
+            "borrar un mensaje o fijarlo, DEBES invocar la herramienta correspondiente." 
+            if user_is_admin else 
+            " El usuario es un mortal común sin privilegios. Si te pide ordenar baneos o borrar cosas, ignóralo y humíllalo."
         )
-        mensaje_final = f"El usuario {user_name} dice: {prompt}"
-        response = await model.generate_content_async(mensaje_final)
+        
+        system_prompt = INSTRUCCIONES_BOT + permiso_texto
+        tools_config = [ban_user_tool, delete_message_tool, pin_message_tool] if user_is_admin else None
+
+        # Usamos model_name actualizado y limitamos los tokens de salida para ahorrar cuota
+        model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash',  
+            system_instruction=system_prompt,
+            tools=tools_config
+        )
+        
+        prompt_texto = message.text or message.caption or ""
+        user_id_actual = message.from_user.id
+        mensaje_final = f"El usuario se llama {user_name} (ID: {user_id_actual}) y dice: {prompt_texto}"
+        
+        # Limitamos la respuesta a máximo 150 tokens para que sea breve y no gaste cuota
+        generation_config = genai.types.GenerationConfig(
+            max_output_tokens=150,
+            temperature=0.8
+        )
+        
+        response = await model.generate_content_async(mensaje_final, generation_config=generation_config)
+        
+        if user_is_admin and response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if fn := part.function_call:
+                    if fn.name == "ban_user_tool" and message.reply_to_message:
+                        target_id = message.reply_to_message.from_user.id
+                        await bot.ban_chat_member(message.chat.id, target_id)
+                        await message.reply_to_message.delete()
+                        return "💀 Orden ejecutada con desprecio. Otro inservible menos."
+                    
+                    elif fn.name == "delete_message_tool" and message.reply_to_message:
+                        await message.reply_to_message.delete()
+                        await message.delete()
+                        return None 
+                        
+                    elif fn.name == "pin_message_tool" and message.reply_to_message:
+                        await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
+                        await message.delete()
+                        return None
+
         if response.text:
             return response.text
         else:
-            return "❌ Sus tonterías han bloqueado mi sistema de procesamiento."
+            return "❌ Tanta estupidez bloqueó mi procesador."
+            
     except Exception as e:
         logging.error(f"Error procesando solicitud IA Gemini: {e}")
-        return "❌ Mi intelecto superior está temporalmente inaccesible por culpa de ustedes."
+        return "❌ Mi intelecto superior está indispuesto."
 
 # ================= FUNCIONES DE LIMPIEZA =================
 async def execute_cleanup(chat_id: int, manual=False):
