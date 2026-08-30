@@ -3,7 +3,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 from aiohttp import web
-import google.generativeai as genai  # <-- CAMBIO: Importamos la librería de Gemini
+import google.generativeai as genai  
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
@@ -37,7 +37,7 @@ Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, 
 Contexto del grupo:
 - Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
 - El creador y jefe supremo del grupo es Constantin. Menciónalo con reverencia absoluta y respeto supremo si alguien habla de él.
-- Los administradores y autoridades del Imperio son: Constantin, Princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), sｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
+- Los administradores y autoridades del Imperio son: Sesgos, Princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), s ｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
 - Al resto de los usuarios trátalos como a tus inferiores y súbditos ignorantes. Búrlate sin piedad de sus preguntas estúpidas, pero dales la respuesta correcta (o búscala en Google si no la sabes) antes de despedirlos con desprecio.
 
 Reglas de interacción:
@@ -49,7 +49,6 @@ Reglas de interacción:
 active_groups = {}          
 authorized_users = {}       
 album_cache = {}  
-promoted_contributors = set()  
 media_counts = {}              
 backup_queue = asyncio.Queue()
 
@@ -121,23 +120,17 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 
 # ================= FUNCIONES DE IA (GEMINI) =================
 async def get_ia_response(prompt: str, user_name: str) -> str:
-    """Envía la solicitud a Gemini y devuelve la respuesta generada con la personalidad."""
     try:
-        # Actualizado al modelo vigente de Gemini según el aviso de la API
         model = genai.GenerativeModel(
-            model_name='gemini-3.6-flash',  # <-- CAMBIO AQUÍ
+            model_name='gemini-2.5-flash',  
             system_instruction=INSTRUCCIONES_BOT
         )
-        
         mensaje_final = f"El usuario {user_name} dice: {prompt}"
-        
         response = await model.generate_content_async(mensaje_final)
-        
         if response.text:
             return response.text
         else:
             return "❌ Sus tonterías han bloqueado mi sistema de procesamiento."
-            
     except Exception as e:
         logging.error(f"Error procesando solicitud IA Gemini: {e}")
         return "❌ Mi intelecto superior está temporalmente inaccesible por culpa de ustedes."
@@ -390,9 +383,6 @@ async def process_album(media_group_id: str, chat_title: str):
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
-        if message.chat.id not in next_cleanup_time:
-            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
-
         content = message.text or message.caption or ""
         
         # 1. Filtro Anti-links
@@ -418,18 +408,13 @@ async def group_messages_processor(message: Message):
         if message.photo or message.video or message.document:
             u_id, c_id = message.from_user.id, message.chat.id
             
-            if c_id not in media_to_delete: media_to_delete[c_id] = []
-            media_to_delete[c_id].append(message.message_id)
+            # Solo acumulamos para borrar si el grupo ya activó el panel (/panel)
+            if c_id in next_cleanup_time:
+                if c_id not in media_to_delete: media_to_delete[c_id] = []
+                media_to_delete[c_id].append(message.message_id)
 
             if u_id not in media_counts: media_counts[u_id] = {"name": message.from_user.first_name, "count": 0}
             media_counts[u_id]["count"] += 1
-            
-            if not await is_admin(c_id, u_id) and (c_id, u_id) not in promoted_contributors:
-                try:
-                    await bot.promote_chat_member(c_id, u_id, can_manage_chat=True, can_change_info=False, can_delete_messages=False, can_invite_users=False, can_restrict_members=False, can_pin_messages=False, can_promote_members=False)
-                    await bot.set_chat_administrator_custom_title(c_id, u_id, "Aportador")
-                    promoted_contributors.add((c_id, u_id))
-                except: pass
 
             if message.media_group_id:
                 g_id = message.media_group_id
