@@ -458,7 +458,7 @@ async def group_messages_processor(message: Message):
             if is_reply_to_bot or is_mention:
                 try:
                     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-                    respuesta = await get_ia_response(content, message.from_user.first_name)
+                    respuesta = await get_ia_response(message, message.from_user.first_name)
                     await message.reply(respuesta)
                 except Exception as e:
                     logging.error(f"Error en interacción IA: {e}")
