@@ -1,9 +1,9 @@
 import asyncio
 import re
 import logging
-import html
-from datetime import timedelta
+from datetime import datetime, timedelta
 from aiohttp import web
+from openai import AsyncOpenAI  # <-- CAMBIO: Importamos AsyncOpenAI
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
@@ -14,34 +14,19 @@ from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-# Nueva librería oficial de Google Gen AI
-from google import genai
-from google.genai import types
-
 # ================= CONFIGURACIÓN =================
-TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
-BACKUP_CHANNEL_ID = -1003807518626  # ID DE TU CANAL PRIVADO UNICO
+TOKEN = "8515941177:AAHF-I0U5EB-zidhrnGbZVQuAdw13ArQpjU"
+BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
-# API Key de Gemini
-GEMINI_API_KEY = "AQ.Ab8RN6KSS7d_-YpINRslkxID9BE4-vgFfShJJE4LOia5OKFV6A"
+# API Key de OpenRouter
+OPENROUTER_API_KEY = "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"
 
 # Lista de IDs de usuarios designados (Super Admins)
 DESIGNATED_USERS = {8983189714, 8764734838}
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
-active_groups = {}          
-authorized_users = {}       
-album_cache = {}  # Memoria temporal para agrupar álbumes multimedia
-
-# Cachés para estadísticas y títulos
-promoted_contributors = set()  
-media_counts = {}              
-
-# Cola de envíos segura para evitar bloqueos de Telegram por FloodWait
-backup_queue = asyncio.Queue()
-
-# ================= INSTRUCCIONES DE LA IA (OTM BOSS) =================
+# --- PERSONALIDAD DE LA IA ---
 INSTRUCCIONES_BOT = """
 Eres "OTM Boss", la inteligencia artificial suprema y bot gestor del grupo de Telegram llamado "Imperio Otomano".
 Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, tienes un humor negro muy pesado, sarcástico, ácido y picante. Tus respuestas deben ser sumamente variadas, creativas y nunca repetitivas; cambia de tono, usa metáforas crueles o bromas pesadas según la ocasión.
@@ -49,7 +34,7 @@ Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, 
 Contexto del grupo:
 - Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
 - El creador y jefe supremo del grupo es Constantin. Menciónalo con reverencia absoluta y respeto supremo si alguien habla de él.
-- Los administradores y autoridades del Imperio son: Princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, CEO, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), sｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
+- Los administradores y autoridades del Imperio son: Constantin, Princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), sｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
 - Al resto de los usuarios trátalos como a tus inferiores y súbditos ignorantes. Búrlate sin piedad de sus preguntas estúpidas, pero dales la respuesta correcta (o búscala en Google si no la sabes) antes de despedirlos con desprecio.
 
 Reglas de interacción:
@@ -59,9 +44,16 @@ Reglas de interacción:
 4. Si necesitas información del mundo exterior o datos actuales, búscalos automáticamente.
 """
 
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+active_groups = {}          
+authorized_users = {}       
+album_cache = {}  
+promoted_contributors = set()  
+media_counts = {}              
+backup_queue = asyncio.Queue()
 
-# Diccionarios de mapeo para la nueva UI de Permisos
+media_to_delete = {}  
+next_cleanup_time = {}  
+
 PERM_MAPPING = {
     "msg": ("can_send_messages", "Mensajes"),
     "photo": ("can_send_photos", "Fotos"),
@@ -92,59 +84,93 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 router = Router()
 
+# <-- CAMBIO: Inicializamos cliente apuntando a OpenRouter
+ia_client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
+
 class BotStates(StatesGroup):
     waiting_for_id = State()
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
-    if user_id in DESIGNATED_USERS:
-        return True
-    if chat_id in authorized_users and user_id in authorized_users[chat_id]:
-        return True
+    if user_id in DESIGNATED_USERS: return True
+    if chat_id in authorized_users and user_id in authorized_users[chat_id]: return True
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-    except:
-        return False
+    except: return False
 
-# ================= TECLADOS EN LÍNEA =================
 def get_main_keyboard(group_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔒 Cerrar Todo", callback_data=f"close_{group_id}"),
-            InlineKeyboardButton(text="🔓 Abrir Todo", callback_data=f"open_{group_id}")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ Permisos de Usuarios", callback_data=f"perms_{group_id}"),
-            InlineKeyboardButton(text="🤖 Permisos del Bot", callback_data=f"botperms_{group_id}")
-        ],
-        [
-            InlineKeyboardButton(text="👥 Autorizar ID", callback_data=f"addid_{group_id}"),
-            InlineKeyboardButton(text="ℹ️ Ayuda", callback_data=f"help_{group_id}")
-        ]
+        [InlineKeyboardButton(text="🔒 Cerrar Todo", callback_data=f"close_{group_id}"), InlineKeyboardButton(text="🔓 Abrir Todo", callback_data=f"open_{group_id}")],
+        [InlineKeyboardButton(text="⚙️ Permisos Usuarios", callback_data=f"perms_{group_id}"), InlineKeyboardButton(text="🤖 Permisos Bot", callback_data=f"botperms_{group_id}")],
+        [InlineKeyboardButton(text="🧹 Gestión de Limpieza", callback_data=f"cleanmenu_{group_id}")], 
+        [InlineKeyboardButton(text="👥 Autorizar ID", callback_data=f"addid_{group_id}"), InlineKeyboardButton(text="ℹ️ Ayuda", callback_data=f"help_{group_id}")]
     ])
 
 def get_back_keyboard(group_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")]])
 
 def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKeyboardMarkup:
-    buttons = []
-    row = []
+    buttons, row = [], []
     for key, (attr, name) in PERM_MAPPING.items():
-        is_allowed = getattr(perms, attr, False)
-        icon = "🟢" if is_allowed else "🔴"
-        btn = InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"tp_{group_id}_{key}")
-        row.append(btn)
-        
+        icon = "🟢" if getattr(perms, attr, False) else "🔴"
+        row.append(InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"tp_{group_id}_{key}"))
         if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    
+            buttons.append(row); row = []
+    if row: buttons.append(row)
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# ================= FUNCIONES DE IA (OPENROUTER) =================
+async def get_ia_response(prompt: str, user_name: str) -> str:
+    """Envía la solicitud a OpenRouter y devuelve la respuesta generada con la personalidad."""
+    try:
+        response = await ia_client.chat.completions.create(
+            model="meta-llama/llama-3.1-8b-instruct:free",  # <-- CAMBIO: Modelo gratuito de OpenRouter
+            messages=[
+                {"role": "system", "content": INSTRUCCIONES_BOT},
+                {"role": "user", "content": f"El usuario se llama {user_name} y dice: {prompt}"}
+            ],
+            temperature=0.8,
+            max_tokens=1024
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logging.error(f"Error procesando solicitud IA: {e}")
+        return "❌ Mi intelecto superior está temporalmente inaccesible por culpa de ustedes."
+
+# ================= FUNCIONES DE LIMPIEZA =================
+async def execute_cleanup(chat_id: int, manual=False):
+    messages = media_to_delete.get(chat_id, [])
+    if not messages:
+        next_cleanup_time[chat_id] = datetime.now() + timedelta(hours=12)
+        return 0
+    count = len(messages)
+    chunk_size = 100
+    for i in range(0, count, chunk_size):
+        chunk = messages[i:i+chunk_size]
+        try: await bot.delete_messages(chat_id, chunk)
+        except Exception as e: logging.error(f"Error borrando chunk de mensajes: {e}")
+        await asyncio.sleep(1) 
+    media_to_delete[chat_id] = []
+    next_cleanup_time[chat_id] = datetime.now() + timedelta(hours=12)
+    tipo = "manual" if manual else "automática"
+    try:
+        msg = await bot.send_message(chat_id, f"🧹 **Limpieza {tipo} completada:** Se han eliminado {count} archivos multimedia para mantener ordenado el grupo.")
+        await asyncio.sleep(60)
+        await msg.delete()
+    except: pass
+    return count
+
+async def auto_cleanup_worker():
+    while True:
+        now = datetime.now()
+        for chat_id, next_time in list(next_cleanup_time.items()):
+            if now >= next_time:
+                await execute_cleanup(chat_id)
+        await asyncio.sleep(60) 
 
 # ================= WORKER (COLA DE ENVÍOS SEGURA) =================
 async def backup_worker():
@@ -153,129 +179,74 @@ async def backup_worker():
         try:
             if task['type'] == 'album':
                 await bot.send_media_group(BACKUP_CHANNEL_ID, media=task['media'])
-                await asyncio.sleep(4)
+                await asyncio.sleep(4)  
             elif task['type'] == 'single':
                 await task['message'].copy_to(BACKUP_CHANNEL_ID, caption=task['caption'])
-                await asyncio.sleep(2)
-        except Exception as e:
-            logging.error(f"Error enviando archivo desde la cola: {e}")
-        finally:
-            backup_queue.task_done()
+                await asyncio.sleep(2)  
+        except: pass
+        finally: backup_queue.task_done()
 
 # ================= COMANDOS EN GRUPO =================
-
 @router.message(Command("panel"))
 async def link_group_panel(message: Message):
-    if message.chat.type in ["group", "supergroup"]:
-        if await is_admin(message.chat.id, message.from_user.id):
-            active_groups[message.from_user.id] = message.chat.id
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="⚙️ Abrir Panel", url=f"t.me/{(await bot.me()).username}?start=panel")
-            ]])
-            await message.reply("Panel de control listo:", reply_markup=kb)
-        else:
-            await message.reply("❌ No tienes permisos.")
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
+        active_groups[message.from_user.id] = message.chat.id
+        if message.chat.id not in next_cleanup_time:
+            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚙️ Abrir Panel", url=f"t.me/{(await bot.me()).username}?start=panel")]])
+        await message.reply("Panel de control listo:", reply_markup=kb)
 
 @router.message(Command("info"))
 async def group_info_cmd(message: Message):
-    if message.chat.type in ["group", "supergroup"]:
-        if await is_admin(message.chat.id, message.from_user.id):
-            try:
-                chat = await message.bot.get_chat(message.chat.id)
-                member_count = await message.bot.get_chat_member_count(message.chat.id)
-                
-                info_text = (
-                    f"📊 **Información del Grupo**\n\n"
-                    f"🏷️ **Nombre:** {chat.title}\n"
-                    f"🆔 **ID del Grupo:** `{chat.id}`\n"
-                    f"👥 **Miembros Totales:** {member_count}\n"
-                    f"📝 **Descripción:** {chat.description or 'Sin descripción'}"
-                )
-                await message.reply(info_text, parse_mode="Markdown")
-                await message.delete()
-            except: pass
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
+        try:
+            chat = await message.bot.get_chat(message.chat.id)
+            info = f"📊 **Info**\n🏷️ **Nombre:** {chat.title}\n🆔 **ID:** `{chat.id}`\n👥 **Miembros:** {await message.bot.get_chat_member_count(message.chat.id)}"
+            await message.reply(info, parse_mode="Markdown")
+            await message.delete()
+        except: pass
 
-# --- COMANDOS DE MODERACIÓN ---
 @router.message(Command("del"))
 async def delete_cmd(message: Message):
-    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        if message.reply_to_message:
-            try:
-                await message.reply_to_message.delete()
-                await message.delete()
-            except: pass
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
+        try: await message.reply_to_message.delete(); await message.delete()
+        except: pass
 
 @router.message(Command("ban"))
 async def ban_cmd(message: Message):
-    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        if message.reply_to_message:
-            try:
-                await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
-                await message.reply_to_message.delete()
-                confirm = await message.answer(f"🔨 Usuario baneado por {message.from_user.first_name}.")
-                await message.delete()
-                await asyncio.sleep(5)
-                await confirm.delete()
-            except: pass
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
+        try:
+            await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+            await message.reply_to_message.delete()
+            c = await message.answer(f"🔨 Usuario baneado.")
+            await message.delete()
+            await asyncio.sleep(5); await c.delete()
+        except: pass
 
 @router.message(Command("unban"))
 async def unban_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        user_to_unban = message.reply_to_message.from_user.id if message.reply_to_message else None
-        if not user_to_unban and len(message.text.split()) > 1 and message.text.split()[1].isdigit():
-            user_to_unban = int(message.text.split()[1])
-                
-        if user_to_unban:
+        u_id = message.reply_to_message.from_user.id if message.reply_to_message else (int(message.text.split()[1]) if len(message.text.split())>1 and message.text.split()[1].isdigit() else None)
+        if u_id:
             try:
-                await bot.unban_chat_member(message.chat.id, user_to_unban)
-                confirm = await message.answer(f"✅ Usuario desbaneado con éxito.")
+                await bot.unban_chat_member(message.chat.id, u_id)
+                c = await message.answer(f"✅ Usuario desbaneado.")
                 await message.delete()
-                await asyncio.sleep(5)
-                await confirm.delete()
+                await asyncio.sleep(5); await c.delete()
             except: pass
 
 @router.message(Command("pin"))
 async def pin_cmd(message: Message):
-    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        if message.reply_to_message:
-            try:
-                await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
-                await message.delete()
-            except: pass
-
-@router.message(Command("silenciar"))
-async def mute_cmd(message: Message):
-    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        if not message.reply_to_message:
-            await message.reply("Tienes que responder al mensaje del estúpido que quieres silenciar. No soy adivino.")
-            return
-
-        target_user = message.reply_to_message.from_user
-        
-        # Evitar fuego amigo
-        if target_user.id == bot.id or await is_admin(message.chat.id, target_user.id):
-            await message.reply("Ni lo sueñes. Mis algoritmos me prohíben silenciar a un superior o a mí mismo.")
-            return
-
-        try:
-            await bot.restrict_chat_member(
-                chat_id=message.chat.id,
-                user_id=target_user.id,
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=timedelta(seconds=60)
-            )
-            await message.reply(f"Silencio en la sala. He amordazado a {target_user.full_name} por 60 segundos para que deje de decir estupideces y reflexione sobre su patética existencia.")
-        except Exception as e:
-            await message.reply("Mis poderes están limitados. Seguro no me dieron el permiso de 'Restringir usuarios' en el grupo. Arreglen eso.")
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
+        try: await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id); await message.delete()
+        except: pass
 
 @router.message(F.text.startswith("/s ") | F.text.startswith(".s "))
 async def repeat_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        text_to_send = message.text[3:].strip()
-        if text_to_send:
-            try:
-                await message.answer(text_to_send)
-                await message.delete()
+        txt = message.text[3:].strip()
+        if txt:
+            try: await message.answer(txt); await message.delete()
             except: pass
 
 @router.message(Command("aportes"))
@@ -302,135 +273,103 @@ async def start_private_panel(message: Message, state: FSMContext):
         await state.clear()
         group_id = active_groups.get(message.from_user.id)
         if group_id:
-            chat_info = await bot.get_chat(group_id)
-            await message.answer(f"⚙️ **Panel de Control:** {chat_info.title}\nElige una opción:", reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
-        else:
-            await message.answer("Usa /panel dentro de un grupo primero para vincularlo.")
+            chat = await bot.get_chat(group_id)
+            await message.answer(f"⚙️ **Panel de Control:** {chat.title}\nElige una opción:", reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
+        else: await message.answer("Usa /panel en un grupo primero.")
 
 @router.callback_query(F.data.startswith("back_"))
 async def back_cb(callback: CallbackQuery, state: FSMContext):
     await state.clear()
+    await callback.message.edit_text("⚙️ **Panel Principal**", reply_markup=get_main_keyboard(int(callback.data.split("_")[1])), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("cleanmenu_"))
+async def clean_menu_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
-    await callback.message.edit_text("⚙️ **Panel Principal**", reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
+    if group_id not in next_cleanup_time:
+        next_cleanup_time[group_id] = datetime.now() + timedelta(hours=12)
+    pending_media = len(media_to_delete.get(group_id, []))
+    time_left = next_cleanup_time[group_id] - datetime.now()
+    hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+    minutes, _ = divmod(remainder, 60)
+    text = (
+        f"🧹 **Gestión de Limpieza Multimedia**\n\n"
+        f"📦 **Archivos en cola para borrar:** `{pending_media}`\n"
+        f"⏱️ **Próxima limpieza automática en:** `{hours}h {minutes}m`\n\n"
+        f"¿Deseas adelantar el proceso y borrar todo ahora?"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑️ Forzar Limpieza Ahora", callback_data=f"forceclean_{group_id}")],
+        [InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("forceclean_"))
+async def force_clean_cb(callback: CallbackQuery):
+    group_id = int(callback.data.split("_")[1])
+    await callback.answer("Ejecutando limpieza manual...", show_alert=False)
+    count = await execute_cleanup(group_id, manual=True)
+    await callback.message.edit_text(
+        f"✅ **Limpieza Finalizada**\nSe eliminaron {count} archivos.\nEl temporizador de 12 horas se ha reiniciado.",
+        reply_markup=get_back_keyboard(group_id),
+        parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data.startswith("perms_"))
+async def show_perms_cb(callback: CallbackQuery):
+    g_id = int(callback.data.split("_")[1])
+    try:
+        chat = await bot.get_chat(g_id)
+        await callback.message.edit_text(f"⚙️ **Configuración:**\nToca para (🟢) Permitir / (🔴) Denegar:", reply_markup=get_permissions_keyboard(g_id, chat.permissions or ChatPermissions()), parse_mode="Markdown")
+    except: pass
+
+@router.callback_query(F.data.startswith("tp_"))
+async def toggle_perm_cb(callback: CallbackQuery):
+    _, g_id_str, p_key = callback.data.split("_", 2)
+    g_id = int(g_id_str)
+    try:
+        chat = await bot.get_chat(g_id)
+        cur = chat.permissions or ChatPermissions()
+        attr = PERM_MAPPING[p_key][0]
+        p_dict = cur.model_dump(exclude_none=True)
+        p_dict[attr] = not getattr(cur, attr, False)
+        new_p = ChatPermissions(**p_dict)
+        await bot.set_chat_permissions(g_id, new_p)
+        await callback.message.edit_reply_markup(reply_markup=get_permissions_keyboard(g_id, new_p))
+    except: pass
 
 @router.callback_query(F.data.startswith("close_"))
 async def close_chat_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
     try:
-        await bot.set_chat_permissions(group_id, ChatPermissions(can_send_messages=False))
-        await callback.answer("✅ Chat cerrado globalmente.", show_alert=True)
+        await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=False))
+        await callback.answer("✅ Chat cerrado.", show_alert=True)
     except: pass
 
 @router.callback_query(F.data.startswith("open_"))
 async def open_chat_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
     try:
-        await bot.set_chat_permissions(group_id, ChatPermissions(
-            can_send_messages=True, can_send_photos=True, can_send_videos=True, can_send_documents=True,
-            can_send_audios=True, can_send_voice_notes=True, can_send_video_notes=True, can_send_other_messages=True
-        ))
-        await callback.answer("✅ Chat abierto globalmente.", show_alert=True)
+        await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=True, can_send_photos=True, can_send_videos=True, can_send_documents=True, can_send_audios=True, can_send_voice_notes=True, can_send_other_messages=True))
+        await callback.answer("✅ Chat abierto.", show_alert=True)
     except: pass
-
-@router.callback_query(F.data.startswith("perms_"))
-async def show_perms_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
-    try:
-        chat = await bot.get_chat(group_id)
-        current_perms = chat.permissions or ChatPermissions()
-        keyboard = get_permissions_keyboard(group_id, current_perms)
-        text = (f"⚙️ **Configuración de Permisos**\nGrupo: {chat.title}\n\n"
-                f"Toca un botón para permitir (🟢) o denegar (🔴) el permiso a todos los miembros de forma global:")
-        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    except Exception as e:
-        await callback.answer(f"Error al leer permisos: {e}", show_alert=True)
-
-@router.callback_query(F.data.startswith("tp_"))
-async def toggle_perm_cb(callback: CallbackQuery):
-    _, group_id_str, perm_key = callback.data.split("_", 2)
-    group_id = int(group_id_str)
-    
-    try:
-        chat = await bot.get_chat(group_id)
-        current_perms = chat.permissions or ChatPermissions()
-        perm_attr, _ = PERM_MAPPING[perm_key]
-        
-        perms_dict = current_perms.model_dump(exclude_none=True)
-        perms_dict[perm_attr] = not getattr(current_perms, perm_attr, False)
-        
-        new_perms = ChatPermissions(**perms_dict)
-        await bot.set_chat_permissions(group_id, new_perms)
-        
-        keyboard = get_permissions_keyboard(group_id, new_perms)
-        await callback.message.edit_reply_markup(reply_markup=keyboard)
-    except Exception as e:
-        await callback.answer("⚠️ No tengo permisos suficientes en el grupo para cambiar esto.", show_alert=True)
 
 @router.callback_query(F.data.startswith("botperms_"))
 async def show_bot_perms_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
+    g_id = int(callback.data.split("_")[1])
     try:
-        me = await bot.me()
-        member = await bot.get_chat_member(group_id, me.id)
-        
-        if member.status != ChatMemberStatus.ADMINISTRATOR:
-            await callback.answer("⚠️ El bot no es administrador en el grupo.", show_alert=True)
-            return
-
-        text = "🤖 **Análisis de Permisos del Bot:**\n\n"
-        
+        member = await bot.get_chat_member(g_id, (await bot.me()).id)
+        txt = "🤖 **Permisos del Bot:**\n\n"
         for attr, name in ADMIN_PERMS.items():
-            has_perm = getattr(member, attr, False)
-            icon = "✅" if has_perm else "❌"
-            text += f"{icon} {name}\n"
-            
-        text += "\n💡 *Asegúrate de que 'Añadir Administradores' tenga un ✅ para que el bot pueda entregar la insignia de 'Aportador' a los usuarios.*"
-        
-        await callback.message.edit_text(text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
-    except Exception as e:
-        await callback.answer("Error obteniendo los permisos del bot.", show_alert=True)
+            txt += f"{'✅' if getattr(member, attr, False) else '❌'} {name}\n"
+        await callback.message.edit_text(txt, reply_markup=get_back_keyboard(g_id), parse_mode="Markdown")
+    except: pass
 
 @router.callback_query(F.data.startswith("help_"))
 async def help_cb(callback: CallbackQuery):
-    group_id = int(callback.data.split("_")[1])
-    help_text = (
-        "📚 **Guía de Uso del Bot:**\n\n"
-        "🔸 **Panel Interactivo:** Puedes apagar/encender funciones o ver permisos.\n"
-        "🔸 **Respaldo Único:** Copia fotos, videos y archivos al canal privado.\n"
-        "🔸 **Conteo:** Usa `/aportes` o `/topaportes` para ver estadísticas.\n"
-        "🔸 **/s o .s [mensaje]:** El bot repite el mensaje y borra el tuyo.\n"
-        "🔸 **/silenciar:** (Respondiendo a un usuario) Lo mutea por 60 segundos.\n"
-        "🔸 **/info, /pin, /del, /ban y /unban:** Comandos de moderación.\n"
-    )
-    await callback.message.edit_text(help_text, reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
+    await callback.message.edit_text("📚 **Guía:**\n🔸 **IA:** Habla mencionándome o respondiendo a un mensaje mío.\n🔸 **Panel:** Permisos y Limpieza.\n🔸 **Respaldo:** Automático.\n🔸 **Mod:** /del, /ban, /unban, /pin.", reply_markup=get_back_keyboard(int(callback.data.split("_")[1])), parse_mode="Markdown")
 
-@router.callback_query(F.data.startswith("addid_"))
-async def addid_cb(callback: CallbackQuery, state: FSMContext):
-    group_id = int(callback.data.split("_")[1])
-    await state.set_state(BotStates.waiting_for_id)
-    await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
-    await callback.message.edit_text("✍️ **Envía el ID numérico del usuario a autorizar.**", reply_markup=get_back_keyboard(group_id), parse_mode="Markdown")
-
-@router.message(BotStates.waiting_for_id)
-async def process_new_id(message: Message, state: FSMContext):
-    data = await state.get_data()
-    group_id = data.get("group_id")
-    panel_msg_id = data.get("panel_msg_id")
-    await message.delete() 
-    try:
-        new_id = int(message.text.strip())
-        if group_id not in authorized_users:
-            authorized_users[group_id] = set()
-        authorized_users[group_id].add(new_id)
-        await bot.edit_message_text(f"✅ **ID {new_id} autorizado con éxito.**", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
-    except ValueError: pass
-    finally: await state.clear()
-
-# ================= FUNCIONES DE ÁLBUM =================
+# ================= ÁLBUMES =================
 async def process_album(media_group_id: str, chat_title: str):
     await asyncio.sleep(3)  
     if media_group_id not in album_cache: return
-        
     messages = album_cache.pop(media_group_id)
     media_group = []
     
@@ -438,117 +377,84 @@ async def process_album(media_group_id: str, chat_title: str):
         caption = None
         if idx == 0:
             orig_cap = msg.caption or ""
-            sig = f"📌 Enviado desde: {chat_title}"
-            caption = f"{orig_cap}\n\n{sig}" if orig_cap else sig
-        
+            caption = f"{orig_cap}\n\n📌 Enviado desde: {chat_title}" if orig_cap else f"📌 Enviado desde: {chat_title}"
         if msg.photo: media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption))
         elif msg.video: media_group.append(InputMediaVideo(media=msg.video.file_id, caption=caption))
         elif msg.document: media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption))
-            
-    if media_group:
-        await backup_queue.put({'type': 'album', 'media': media_group})
+    
+    if media_group: await backup_queue.put({'type': 'album', 'media': media_group})
 
-# ================= FILTRO GLOBAL (ANTI-LINK, IA Y MEDIOS) =================
+# ================= FILTRO Y GESTIÓN DE MENSAJES =================
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
-        # 1. Filtro Anti-Link
-        content = message.text or message.caption
-        if content and LINK_REGEX.search(content):
-            if not await is_admin(message.chat.id, message.from_user.id):
-                try: 
-                    await message.delete()
-                    return
-                except: pass
+        if message.chat.id not in next_cleanup_time:
+            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
+
+        content = message.text or message.caption or ""
         
-        # 2. IA Chatbot (Se activa si mencionan al bot o le responden)
-        if message.text:
-            bot_me = await bot.get_me()
-            is_mentioned = f"@{bot_me.username}" in message.text
-            is_reply = message.reply_to_message and message.reply_to_message.from_user.id == bot_me.id
+        # 1. Filtro Anti-links
+        if content and LINK_REGEX.search(content) and not await is_admin(message.chat.id, message.from_user.id):
+            try: await message.delete(); return
+            except: pass
+
+        # 2. IA - Interacción Orgánica (OpenRouter)
+        if content:
+            bot_user = await bot.me()
+            is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.id == bot_user.id
+            is_mention = bot_user.username and f"@{bot_user.username}" in content
             
-            if is_mentioned or is_reply:
-                # Mostrar que OTM Boss está escribiendo
-                await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-                prompt = message.text.replace(f"@{bot_me.username}", "").strip()
-                
-                if not prompt: 
-                    prompt = "Alguien me acaba de mencionar sin decir nada. Búrlate de ellos por hacerme perder el tiempo."
-                
+            if is_reply_to_bot or is_mention:
                 try:
-                    # Con búsqueda en Google automática y manejo silencioso de límites (429)
-                    response = await ai_client.aio.models.generate_content(
-                        model='gemini-3.6-flash',
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=INSTRUCCIONES_BOT,
-                            tools=[{"google_search": {}}]
-                        )
-                    )
-                    await message.reply(text=response.text, parse_mode="Markdown")
+                    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+                    respuesta = await get_ia_response(content, message.from_user.first_name)
+                    await message.reply(respuesta)
                 except Exception as e:
-                    # Si la cuota se agota (429), el bot no hace nada para evitar spam en el grupo
-                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        logging.warning("Cuota de IA superada temporalmente. OTM Boss en silencio táctico.")
-                        return
-                    
-                    logging.error(f"Error con la IA: {e}")
-                    await message.reply("Mis circuitos están saturados por su insignificancia. Vuelvan a intentar luego.")
+                    logging.error(f"Error en interacción IA: {e}")
         
-        # 3. Procesador de Archivos Multimedia (Aportadores y Backup)
+        # 3. Respaldo Multimedia y Limpieza
         if message.photo or message.video or message.document:
-            user_id = message.from_user.id
-            chat_id = message.chat.id
+            u_id, c_id = message.from_user.id, message.chat.id
             
-            if user_id not in media_counts:
-                media_counts[user_id] = {"name": message.from_user.first_name, "count": 0}
-            media_counts[user_id]["count"] += 1
+            if c_id not in media_to_delete: media_to_delete[c_id] = []
+            media_to_delete[c_id].append(message.message_id)
+
+            if u_id not in media_counts: media_counts[u_id] = {"name": message.from_user.first_name, "count": 0}
+            media_counts[u_id]["count"] += 1
             
-            if not await is_admin(chat_id, user_id):
-                if (chat_id, user_id) not in promoted_contributors:
-                    try:
-                        await bot.promote_chat_member(
-                            chat_id, user_id, 
-                            can_manage_chat=True,
-                            can_change_info=False, can_delete_messages=False, can_invite_users=False,
-                            can_restrict_members=False, can_pin_messages=False, can_manage_video_chats=False,
-                            can_promote_members=False
-                        )
-                        await bot.set_chat_administrator_custom_title(chat_id, user_id, "Aportador")
-                        promoted_contributors.add((chat_id, user_id))
-                    except: pass
+            if not await is_admin(c_id, u_id) and (c_id, u_id) not in promoted_contributors:
+                try:
+                    await bot.promote_chat_member(c_id, u_id, can_manage_chat=True, can_change_info=False, can_delete_messages=False, can_invite_users=False, can_restrict_members=False, can_pin_messages=False, can_promote_members=False)
+                    await bot.set_chat_administrator_custom_title(c_id, u_id, "Aportador")
+                    promoted_contributors.add((c_id, u_id))
+                except: pass
 
             if message.media_group_id:
-                group_id = message.media_group_id
-                if group_id not in album_cache:
-                    album_cache[group_id] = []
-                    asyncio.create_task(process_album(group_id, message.chat.title))
-                album_cache[group_id].append(message)
+                g_id = message.media_group_id
+                if g_id not in album_cache:
+                    album_cache[g_id] = []
+                    asyncio.create_task(process_album(g_id, message.chat.title))
+                album_cache[g_id].append(message)
             else:
-                original_caption = message.caption or ""
-                group_signature = f"📌 Enviado desde: {message.chat.title}"
-                new_caption = f"{original_caption}\n\n{group_signature}" if original_caption else group_signature
-                await backup_queue.put({'type': 'single', 'message': message, 'caption': new_caption})
+                orig_cap = message.caption or ""
+                new_cap = f"{orig_cap}\n\n📌 Enviado desde: {message.chat.title}" if orig_cap else f"📌 Enviado desde: {message.chat.title}"
+                await backup_queue.put({'type': 'single', 'message': message, 'caption': new_cap})
 
-# ================= SERVIDOR WEB FALSO PARA RENDER =================
-async def handle(request):
-    return web.Response(text="OTM Boss is running smoothly!")
+# ================= RENDER Y EJECUCIÓN =================
+async def handle(request): return web.Response(text="Bot is running!")
 
 async def web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)
-    await site.start()
+    app = web.Application(); app.router.add_get("/", handle)
+    runner = web.AppRunner(app); await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", 10000).start()
 
-# ================= EJECUCIÓN PRINCIPAL =================
 async def main():
     dp.include_router(router)
     asyncio.create_task(web_server())
-    asyncio.create_task(backup_worker())  
-    print("🤖 OTM Boss Iniciado y corriendo en puerto 10000...")
+    asyncio.create_task(backup_worker()) 
+    asyncio.create_task(auto_cleanup_worker()) 
+    print("🤖 Bot iniciado y corriendo...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
