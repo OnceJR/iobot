@@ -123,15 +123,14 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 async def get_ia_response(prompt: str, user_name: str) -> str:
     """Envía la solicitud a Gemini y devuelve la respuesta generada con la personalidad."""
     try:
-        # Inicializamos el modelo con las instrucciones del sistema
+        # Actualizado al modelo vigente de Gemini
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash',  # <-- CAMBIO AQUÍ
             system_instruction=INSTRUCCIONES_BOT
         )
         
         mensaje_final = f"El usuario {user_name} dice: {prompt}"
         
-        # Generamos la respuesta de forma asíncrona
         response = await model.generate_content_async(mensaje_final)
         
         if response.text:
