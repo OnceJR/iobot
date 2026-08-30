@@ -123,23 +123,41 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
     buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ================= FUNCIONES DE IA (OPENROUTER) =================
+# # ================= FUNCIONES DE IA (OPENROUTER MULTI-MODELO) =================
+
+# Lista de los modelos gratuitos más estables de OpenRouter
+FREE_MODELS = [
+    "gryphe/mythomax-l2-13b:free",       # Extremadamente estable, excelente para roles/humor
+    "undi95/toppy-m-7b:free",            # Muy rápido y casi nunca se cae
+    "meta-llama/llama-3-8b-instruct:free", # Clásico de Meta, suele estar activo
+    "huggingfaceh4/zephyr-7b-beta:free", # Nunca lo quitan de la capa gratuita
+    "google/gemma-2-9b-it:free"          # Por si los servidores de Google vuelven
+]
+
 async def get_ia_response(prompt: str, user_name: str) -> str:
-    """Envía la solicitud a OpenRouter y devuelve la respuesta generada con la personalidad."""
-    try:
-        response = await ia_client.chat.completions.create(
-            model="google/gemma-2-9b-it:free",  # <-- CAMBIO: Modelo gratuito de OpenRouter
-            messages=[
-                {"role": "system", "content": INSTRUCCIONES_BOT},
-                {"role": "user", "content": f"El usuario se llama {user_name} y dice: {prompt}"}
-            ],
-            temperature=0.8,
-            max_tokens=1024
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logging.error(f"Error procesando solicitud IA: {e}")
-        return "❌ Mi intelecto superior está temporalmente inaccesible por culpa de ustedes."
+    """Envía la solicitud a OpenRouter rotando modelos si alguno falla."""
+    
+    for model_name in FREE_MODELS:
+        try:
+            response = await ia_client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": INSTRUCCIONES_BOT},
+                    {"role": "user", "content": f"El usuario se llama {user_name} y dice: {prompt}"}
+                ],
+                temperature=0.8,
+                max_tokens=1024
+            )
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            # Si falla, imprimimos el error en consola pero NO nos detenemos.
+            logging.warning(f"⚠️ El modelo {model_name} falló o está apagado. Intentando el siguiente...")
+            continue  # Pasa automáticamente al siguiente modelo de la lista
+            
+    # Si el bucle termina y TODOS los modelos de la lista fallaron:
+    logging.error("Todos los servidores gratuitos de OpenRouter están caídos.")
+    return "❌ Ustedes, simples mortales, han saturado las redes. Mi intelecto superior está inaccesible en este momento."
 
 # ================= FUNCIONES DE LIMPIEZA =================
 async def execute_cleanup(chat_id: int, manual=False):
