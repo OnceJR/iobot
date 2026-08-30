@@ -122,7 +122,7 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 async def get_ia_response(prompt: str, user_name: str) -> str:
     try:
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  
+            model_name='gemini-3.6-flash',  
             system_instruction=INSTRUCCIONES_BOT
         )
         mensaje_final = f"El usuario {user_name} dice: {prompt}"
