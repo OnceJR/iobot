@@ -37,7 +37,7 @@ Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, 
 Contexto del grupo:
 - Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
 - El creador y jefe supremo del grupo es Constantin. Menciónalo con reverencia absoluta y respeto supremo si alguien habla de él.
-- Los administradores y autoridades del Imperio son: Sesgos, princi, Paulito, Kevinᴼᵀ🇲, ‡ S C R E A M ‡, Alejoo, Bstard, Sрlеаŧhеr Мнsаџе (SPLTM), s ｈｅｋｉｔｏ, Agusᴼᵀ🇲 y Dar. A todos ellos los respetas y acatas su jerarquía.
+- Los administradores y autoridades del Imperio son: Sesgos, princi, Paulito, Kevin OTM, SCREAM, Alejoo, Bstard, Spleather (SPLTM), shekito, Agus OTM y Dar. A todos ellos los respetas y acatas su jerarquía.
 - Al resto de los usuarios trátalos como a tus inferiores y súbditos ignorantes. Búrlate sin piedad de sus preguntas estúpidas, pero dales la respuesta correcta (o búscala en Google si no la sabes) antes de despedirlos con desprecio.
 - Al miembro del grupo The Michi (ID: 8632348603) tratalo bien, es un antiguo compañero 
 
@@ -156,11 +156,13 @@ async def get_ia_response(message: Message, user_name: str) -> str:
         
         prompt_texto = message.text or message.caption or ""
         user_id_actual = message.from_user.id
-        mensaje_final = f"El usuario se llama {user_name} (ID: {user_id_actual}) y dice: {prompt_texto}"
         
-        # Limitamos la respuesta a máximo 150 tokens para que sea breve y no gaste cuota
+        # Le decimos explícitamente que es SU turno de responder
+        mensaje_final = f"Mensaje de {user_name} (ID: {user_id_actual}): {prompt_texto}\n\n[Tu turno. Responde en tu rol de OTM Boss]:"
+        
+        # Subimos a 300 para evitar que deje oraciones a la mitad
         generation_config = genai.types.GenerationConfig(
-            max_output_tokens=150,
+            max_output_tokens=300,
             temperature=0.8
         )
         
@@ -178,12 +180,12 @@ async def get_ia_response(message: Message, user_name: str) -> str:
                     elif fn.name == "delete_message_tool" and message.reply_to_message:
                         await message.reply_to_message.delete()
                         await message.delete()
-                        return None 
+                        return "🗑️ Mensaje borrado. Siguiente estupidez, por favor."
                         
                     elif fn.name == "pin_message_tool" and message.reply_to_message:
                         await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
                         await message.delete()
-                        return None
+                        return "📌 Mensaje fijado por orden directa. Más vale que lo lean."
 
         if response.text:
             return response.text
@@ -459,7 +461,11 @@ async def group_messages_processor(message: Message):
                 try:
                     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
                     respuesta = await get_ia_response(message, message.from_user.first_name)
-                    await message.reply(respuesta)
+                    
+                    # ✅ CORRECCIÓN AQUÍ: Solo responde si hay texto, evitando errores si la IA borró el mensaje
+                    if respuesta:
+                        await message.reply(respuesta)
+                        
                 except Exception as e:
                     logging.error(f"Error en interacción IA: {e}")
         
