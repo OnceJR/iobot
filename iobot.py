@@ -106,14 +106,13 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 
 # ================= WORKERS EN SEGUNDO PLANO =================
 
-# 1. Notificador de Admins (El Espejo)
+# 1. Notificador de Admins (El Espejo Multimedia)
 async def admin_notifier_worker():
-    """Reenvía los mensajes a ti y a los IDs que autorices desde el panel."""
+    """Reenvía únicamente fotos, videos y documentos a ti y al staff autorizado."""
     while True:
         msg = await admin_notifier_queue.get()
         group_id = msg.chat.id
         
-        # Juntamos tu ID principal con los IDs autorizados temporalmente en ese grupo
         receivers = set(DESIGNATED_USERS)
         if group_id in authorized_users:
             receivers.update(authorized_users[group_id])
@@ -121,9 +120,9 @@ async def admin_notifier_worker():
         for admin_id in receivers:
             try:
                 await msg.forward(chat_id=admin_id)
-                await asyncio.sleep(0.5)  # Evita que Telegram bloquee al bot
+                await asyncio.sleep(0.5)  
             except Exception: 
-                pass  # Si el usuario no inició chat con el bot, se ignora
+                pass  
                 
         admin_notifier_queue.task_done()
 
@@ -305,7 +304,7 @@ async def addid_cb(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_for_id)
     await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
     await callback.message.edit_text(
-        "✍️ **Envía el ID numérico del usuario a autorizar.**\n\n_El usuario obtendrá acceso a los comandos y empezará a recibir copias espejo de los mensajes._", 
+        "✍️ **Envía el ID numérico del usuario a autorizar.**\n\n_El usuario obtendrá acceso a los comandos y empezará a recibir copias espejo de la multimedia._", 
         reply_markup=get_back_keyboard(group_id), 
         parse_mode="Markdown"
     )
@@ -325,7 +324,7 @@ async def process_new_id(message: Message, state: FSMContext):
         texto_exito = (
             f"✅ **Personal Autorizado**\n"
             f"El ID `{new_id}` ha sido añadido al Staff temporal.\n"
-            f"Ahora podrá usar moderación y el Sistema Espejo le reenviará los mensajes."
+            f"Ahora podrá usar moderación y el Sistema Espejo le reenviará los archivos multimedia."
         )
         await bot.edit_message_text(texto_exito, chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
     except ValueError: pass
@@ -426,7 +425,7 @@ async def help_cb(callback: CallbackQuery):
     texto = (
         "📖 **MANUAL DE OPERACIONES**\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "🔸 **Sistema Espejo:** Todos los mensajes del grupo se reenvían al chat privado del staff autorizado.\n"
+        "🔸 **Sistema Espejo Multimedia:** Solo las fotos, videos y documentos enviados al grupo se reenvían al chat privado del staff.\n"
         "🔸 **Panel Interactivo:** Administra bloqueos, aperturas y permisos globales al instante.\n"
         "🔸 **Respaldo:** Todo archivo multimedia se copia automáticamente al canal bóveda.\n"
         "🔸 **Comandos Administrativos:** Responde a un mensaje con `/del`, `/ban`, `/unban`, `/pin` para moderación rápida."
@@ -456,23 +455,19 @@ async def process_album(media_group_id: str, chat_title: str):
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
-        # 1. 🔄 SISTEMA ESPEJO: Reenviar el mensaje a los Super Admins
-        await admin_notifier_queue.put(message)
-
-        # 2. Inicialización de reloj de limpieza si es la primera vez
-        if message.chat.id not in next_cleanup_time:
-            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
-
         content = message.text or message.caption or ""
         
-        # 3. Filtro Anti-links
+        # 1. Filtro Anti-links
         if content and LINK_REGEX.search(content) and not await is_admin(message.chat.id, message.from_user.id):
             try: await message.delete(); return
             except: pass
         
-        # 4. Respaldo Multimedia y Conteo
+        # 2. Respaldo Multimedia, Conteo y Espejo (Estrictamente Fotos, Videos y Documentos)
         if message.photo or message.video or message.document:
             u_id, c_id = message.from_user.id, message.chat.id
+            
+            # 🔄 SISTEMA ESPEJO MULTIMEDIA: Enviar a admins solo si es multimedia
+            await admin_notifier_queue.put(message)
             
             # Solo acumulamos para borrar si el grupo ya activó el panel (/panel)
             if c_id in next_cleanup_time:
@@ -506,8 +501,8 @@ async def main():
     asyncio.create_task(web_server())
     asyncio.create_task(backup_worker()) 
     asyncio.create_task(auto_cleanup_worker()) 
-    asyncio.create_task(admin_notifier_worker()) # Inicia el trabajador de los reenvíos a Admins
-    print("🛡️ Bot Iniciado: Modos Profesionales y Sistema Espejo Activos...")
+    asyncio.create_task(admin_notifier_worker()) 
+    print("🛡️ Bot Iniciado: Espejo Multimedia Exclusivo Activo...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
