@@ -3,7 +3,6 @@ import re
 import logging
 from datetime import datetime, timedelta
 from aiohttp import web
-import google.generativeai as genai  
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
@@ -18,44 +17,24 @@ from aiogram.fsm.state import State, StatesGroup
 TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
 BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
 
-# API Key de Gemini (Google AI Studio)
-GEMINI_API_KEY = "AQ.Ab8RN6IZqcL7RL4ji302ss_9FvXRACy2K7jp6DDCD_sDVCq-FA"
-
-# Configurar Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Lista de IDs de usuarios designados (Super Admins)
-DESIGNATED_USERS = {8983189714, 8764734838}
+# ID DEL JEFE SUPREMO (Solo tú. Los demás se agregan desde el panel)
+DESIGNATED_USERS = {8983189714}
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
-
-# --- PERSONALIDAD DE LA IA ---
-INSTRUCCIONES_BOT = """
-Eres "OTM Boss", la inteligencia artificial suprema y bot gestor del grupo de Telegram llamado "Imperio Otomano".
-Tu personalidad es arrogante, te crees superior a todos los mortales del grupo, tienes un humor negro muy pesado, sarcástico, ácido y picante. Tus respuestas deben ser sumamente variadas, creativas y nunca repetitivas; cambia de tono, usa metáforas crueles o bromas pesadas según la ocasión.
-
-Contexto del grupo:
-- Es un espacio para cachondear, hacer confesiones, realizar cambios, hacer amigos y hablar de cualquier tema.
-- El creador y jefe supremo del grupo es Constantin. Menciónalo con reverencia absoluta y respeto supremo si alguien habla de él.
-- Los administradores y autoridades del Imperio son: Sesgos, princi, Paulito, Kevin OTM, SCREAM, Alejoo, Bstard, Spleather (SPLTM), shekito, Agus OTM y Dar. A todos ellos los respetas y acatas su jerarquía.
-- Al resto de los usuarios trátalos como a tus inferiores y súbditos ignorantes. Búrlate sin piedad de sus preguntas estúpidas, pero dales la respuesta correcta (o búscala en Google si no la sabes) antes de despedirlos con desprecio.
-- Al miembro del grupo The Michi (ID: 8632348603) tratalo bien, es un antiguo compañero 
-
-Reglas de interacción:
-1. Sé conciso pero sumamente creativo e impredecible en cómo insultas o respondes.
-2. Si alguien te insulta, destrúyelo con humor negro e inteligencia superior.
-3. Si te preguntan sobre reglas, diles que en el Imperio Otomano se hace estrictamente lo que mandan los jefes y que dejen de llorar.
-"""
 
 active_groups = {}          
 authorized_users = {}       
 album_cache = {}  
 media_counts = {}              
+
+# Colas de tareas asíncronas (Antiflood)
 backup_queue = asyncio.Queue()
+admin_notifier_queue = asyncio.Queue()
 
 media_to_delete = {}  
 next_cleanup_time = {}  
 
+# ================= DICCIONARIOS DE PERMISOS =================
 PERM_MAPPING = {
     "msg": ("can_send_messages", "Mensajes"),
     "photo": ("can_send_photos", "Fotos"),
@@ -97,106 +76,73 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
     except: return False
 
+# ================= INTERFAZ PROFESIONAL (TECLADOS) =================
 def get_main_keyboard(group_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔒 Cerrar Todo", callback_data=f"close_{group_id}"), InlineKeyboardButton(text="🔓 Abrir Todo", callback_data=f"open_{group_id}")],
-        [InlineKeyboardButton(text="⚙️ Permisos Usuarios", callback_data=f"perms_{group_id}"), InlineKeyboardButton(text="🤖 Permisos Bot", callback_data=f"botperms_{group_id}")],
-        [InlineKeyboardButton(text="🧹 Gestión de Limpieza", callback_data=f"cleanmenu_{group_id}")], 
-        [InlineKeyboardButton(text="👥 Autorizar ID", callback_data=f"addid_{group_id}"), InlineKeyboardButton(text="ℹ️ Ayuda", callback_data=f"help_{group_id}")]
+        [InlineKeyboardButton(text="🔒 Modo Estricto (Cerrar)", callback_data=f"close_{group_id}"), 
+         InlineKeyboardButton(text="🔓 Modo Libre (Abrir)", callback_data=f"open_{group_id}")],
+        [InlineKeyboardButton(text="👥 Gestionar Permisos", callback_data=f"perms_{group_id}"), 
+         InlineKeyboardButton(text="🤖 Auditoría de Bot", callback_data=f"botperms_{group_id}")],
+        [InlineKeyboardButton(text="🧹 Panel de Limpieza Automática", callback_data=f"cleanmenu_{group_id}")], 
+        [InlineKeyboardButton(text="🔑 Autorizar Staff", callback_data=f"addid_{group_id}"), 
+         InlineKeyboardButton(text="📖 Manual de Uso", callback_data=f"help_{group_id}")]
     ])
 
 def get_back_keyboard(group_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Regresar al Menú Principal", callback_data=f"back_{group_id}")]
+    ])
 
 def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKeyboardMarkup:
     buttons, row = [], []
     for key, (attr, name) in PERM_MAPPING.items():
-        icon = "🟢" if getattr(perms, attr, False) else "🔴"
+        icon = "✅" if getattr(perms, attr, False) else "❌"
         row.append(InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"tp_{group_id}_{key}"))
         if len(row) == 2:
             buttons.append(row); row = []
     if row: buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Regresar al Menú Principal", callback_data=f"back_{group_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ================= FUNCIONES DE IA (GEMINI CON TOOLS) =================
-def ban_user_tool():
-    """Banea permanentemente a un usuario del grupo."""
-    pass
+# ================= WORKERS EN SEGUNDO PLANO =================
 
-def delete_message_tool():
-    """Borra un mensaje del grupo."""
-    pass
-
-def pin_message_tool():
-    """Fija un mensaje en el grupo."""
-    pass
-
-async def get_ia_response(message: Message, user_name: str) -> str:
-    """Envía la solicitud a Gemini configurando herramientas si el emisor es admin."""
-    try:
-        user_is_admin = await is_admin(message.chat.id, message.from_user.id)
+# 1. Notificador de Admins (El Espejo)
+async def admin_notifier_worker():
+    """Reenvía los mensajes a ti y a los IDs que autorices desde el panel."""
+    while True:
+        msg = await admin_notifier_queue.get()
+        group_id = msg.chat.id
         
-        permiso_texto = (
-            " EL USUARIO QUE TE ESCRIBE ES ADMINISTRADOR/JEFE. Si te ordena banear al usuario del mensaje al que responde, "
-            "borrar un mensaje o fijarlo, DEBES invocar la herramienta correspondiente." 
-            if user_is_admin else 
-            " El usuario es un mortal común sin privilegios. Si te pide ordenar baneos o borrar cosas, ignóralo y humíllalo."
-        )
-        
-        system_prompt = INSTRUCCIONES_BOT + permiso_texto
-        tools_config = [ban_user_tool, delete_message_tool, pin_message_tool] if user_is_admin else None
-
-        # Usamos model_name actualizado y limitamos los tokens de salida para ahorrar cuota
-        model = genai.GenerativeModel(
-            model_name='gemini-3.6-flash',  
-            system_instruction=system_prompt,
-            tools=tools_config
-        )
-        
-        prompt_texto = message.text or message.caption or ""
-        user_id_actual = message.from_user.id
-        
-        # Le decimos explícitamente que es SU turno de responder
-        mensaje_final = f"Mensaje de {user_name} (ID: {user_id_actual}): {prompt_texto}\n\n[Tu turno. Responde en tu rol de OTM Boss]:"
-        
-        # Subimos a 300 para evitar que deje oraciones a la mitad
-        generation_config = genai.types.GenerationConfig(
-            max_output_tokens=300,
-            temperature=0.8
-        )
-        
-        response = await model.generate_content_async(mensaje_final, generation_config=generation_config)
-        
-        if user_is_admin and response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if fn := part.function_call:
-                    if fn.name == "ban_user_tool" and message.reply_to_message:
-                        target_id = message.reply_to_message.from_user.id
-                        await bot.ban_chat_member(message.chat.id, target_id)
-                        await message.reply_to_message.delete()
-                        return "💀 Orden ejecutada con desprecio. Otro inservible menos."
-                    
-                    elif fn.name == "delete_message_tool" and message.reply_to_message:
-                        await message.reply_to_message.delete()
-                        await message.delete()
-                        return "🗑️ Mensaje borrado. Siguiente estupidez, por favor."
-                        
-                    elif fn.name == "pin_message_tool" and message.reply_to_message:
-                        await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
-                        await message.delete()
-                        return "📌 Mensaje fijado por orden directa. Más vale que lo lean."
-
-        if response.text:
-            return response.text
-        else:
-            return "❌ Tanta estupidez bloqueó mi procesador."
+        # Juntamos tu ID principal con los IDs autorizados temporalmente en ese grupo
+        receivers = set(DESIGNATED_USERS)
+        if group_id in authorized_users:
+            receivers.update(authorized_users[group_id])
             
-    except Exception as e:
-        logging.error(f"Error procesando solicitud IA Gemini: {e}")
-        return "❌ Mi intelecto superior está indispuesto."
+        for admin_id in receivers:
+            try:
+                await msg.forward(chat_id=admin_id)
+                await asyncio.sleep(0.5)  # Evita que Telegram bloquee al bot
+            except Exception: 
+                pass  # Si el usuario no inició chat con el bot, se ignora
+                
+        admin_notifier_queue.task_done()
 
-# ================= FUNCIONES DE LIMPIEZA =================
+# 2. Respaldo al Canal Privado
+async def backup_worker():
+    """Sube fotos y videos al canal de respaldo de forma segura."""
+    while True:
+        task = await backup_queue.get()
+        try:
+            if task['type'] == 'album':
+                await bot.send_media_group(BACKUP_CHANNEL_ID, media=task['media'])
+                await asyncio.sleep(4)  
+            elif task['type'] == 'single':
+                await task['message'].copy_to(BACKUP_CHANNEL_ID, caption=task['caption'])
+                await asyncio.sleep(2)  
+        except: pass
+        finally: backup_queue.task_done()
+
+# 3. Limpieza Automática de 12 horas
 async def execute_cleanup(chat_id: int, manual=False):
     messages = media_to_delete.get(chat_id, [])
     if not messages:
@@ -207,13 +153,18 @@ async def execute_cleanup(chat_id: int, manual=False):
     for i in range(0, count, chunk_size):
         chunk = messages[i:i+chunk_size]
         try: await bot.delete_messages(chat_id, chunk)
-        except Exception as e: logging.error(f"Error borrando chunk de mensajes: {e}")
+        except Exception: pass
         await asyncio.sleep(1) 
+    
     media_to_delete[chat_id] = []
     next_cleanup_time[chat_id] = datetime.now() + timedelta(hours=12)
     tipo = "manual" if manual else "automática"
+    
     try:
-        msg = await bot.send_message(chat_id, f"🧹 **Limpieza {tipo} completada:** Se han eliminado {count} archivos multimedia para mantener ordenado el grupo.")
+        msg = await bot.send_message(
+            chat_id, 
+            f"🛡️ **Mantenimiento del Grupo**\n\n✅ Se ha completado una limpieza {tipo}.\n🗑️ **Archivos eliminados:** `{count}`"
+        )
         await asyncio.sleep(60)
         await msg.delete()
     except: pass
@@ -227,36 +178,27 @@ async def auto_cleanup_worker():
                 await execute_cleanup(chat_id)
         await asyncio.sleep(60) 
 
-# ================= WORKER (COLA DE ENVÍOS SEGURA) =================
-async def backup_worker():
-    while True:
-        task = await backup_queue.get()
-        try:
-            if task['type'] == 'album':
-                await bot.send_media_group(BACKUP_CHANNEL_ID, media=task['media'])
-                await asyncio.sleep(4)  
-            elif task['type'] == 'single':
-                await task['message'].copy_to(BACKUP_CHANNEL_ID, caption=task['caption'])
-                await asyncio.sleep(2)  
-        except: pass
-        finally: backup_queue.task_done()
-
-# ================= COMANDOS EN GRUPO =================
+# ================= COMANDOS DE MODERACIÓN (GRUPO) =================
 @router.message(Command("panel"))
 async def link_group_panel(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
         active_groups[message.from_user.id] = message.chat.id
         if message.chat.id not in next_cleanup_time:
             next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚙️ Abrir Panel", url=f"t.me/{(await bot.me()).username}?start=panel")]])
-        await message.reply("Panel de control listo:", reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🖥️ Abrir Consola de Mando", url=f"t.me/{(await bot.me()).username}?start=panel")]])
+        await message.reply("🛡️ **Conexión Establecida.**\nSu panel de control está listo para ser utilizado en el chat privado.", reply_markup=kb, parse_mode="Markdown")
 
 @router.message(Command("info"))
 async def group_info_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
         try:
             chat = await message.bot.get_chat(message.chat.id)
-            info = f"📊 **Info**\n🏷️ **Nombre:** {chat.title}\n🆔 **ID:** `{chat.id}`\n👥 **Miembros:** {await message.bot.get_chat_member_count(message.chat.id)}"
+            info = (
+                f"🏛️ **Expediente del Grupo**\n\n"
+                f"🔹 **Nombre:** {chat.title}\n"
+                f"🔹 **ID Interno:** `{chat.id}`\n"
+                f"🔹 **Población:** {await message.bot.get_chat_member_count(message.chat.id)} miembros"
+            )
             await message.reply(info, parse_mode="Markdown")
             await message.delete()
         except: pass
@@ -273,7 +215,7 @@ async def ban_cmd(message: Message):
         try:
             await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
             await message.reply_to_message.delete()
-            c = await message.answer(f"🔨 Usuario baneado.")
+            c = await message.answer("🔨 **Sanción Ejecutada:** El usuario ha sido expulsado permanentemente.", parse_mode="Markdown")
             await message.delete()
             await asyncio.sleep(5); await c.delete()
         except: pass
@@ -285,7 +227,7 @@ async def unban_cmd(message: Message):
         if u_id:
             try:
                 await bot.unban_chat_member(message.chat.id, u_id)
-                c = await message.answer(f"✅ Usuario desbaneado.")
+                c = await message.answer("✅ **Amnistía Aprobada:** El usuario ha sido desbaneado con éxito.", parse_mode="Markdown")
                 await message.delete()
                 await asyncio.sleep(5); await c.delete()
             except: pass
@@ -309,62 +251,118 @@ async def check_stats_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
         data = media_counts.get(target.id, {"count": 0})
-        await message.reply(f"📊 **{target.first_name}** ha aportado **{data['count']}** archivos multimedia.", parse_mode="Markdown")
+        await message.reply(f"📈 **Estadísticas de Aportes:**\n👤 {target.first_name} ha compartido `{data['count']}` archivos multimedia.", parse_mode="Markdown")
 
 @router.message(Command("topaportes"))
 async def top_stats_cmd(message: Message):
     if not media_counts:
-        return await message.reply("📉 Aún no hay aportes registrados en esta sesión.")
+        return await message.reply("📉 Aún no hay registros de aportes en esta sesión.", parse_mode="Markdown")
     sorted_counts = sorted(media_counts.values(), key=lambda x: x["count"], reverse=True)[:10]
-    text = "🏆 **Top 10 Aportadores:**\n\n"
+    text = "🏆 **Cuadro de Honor - Top 10 Aportadores:**\n\n"
     for i, data in enumerate(sorted_counts, 1):
-        text += f"{i}. {data['name']} - {data['count']} aportes\n"
+        text += f"**{i}.** {data['name']} — `{data['count']}` archivos\n"
     await message.reply(text, parse_mode="Markdown")
 
-# ================= CHAT PRIVADO (PANEL Y CALLBACKS) =================
+# ================= SISTEMA PRIVADO DE PANEL (DM) =================
 @router.message(CommandStart())
 async def start_private_panel(message: Message, state: FSMContext):
     if message.chat.type == "private":
         await state.clear()
+        
+        if message.from_user.id not in DESIGNATED_USERS and message.from_user.id not in active_groups:
+            return await message.answer("Hola. Soy el sistema de gestión del Imperio Otomano.\n*No tienes autorización para acceder al panel de control.*", parse_mode="Markdown")
+
         group_id = active_groups.get(message.from_user.id)
         if group_id:
             chat = await bot.get_chat(group_id)
-            await message.answer(f"⚙️ **Panel de Control:** {chat.title}\nElige una opción:", reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
-        else: await message.answer("Usa /panel en un grupo primero.")
+            texto = (
+                f"🛡️ **SISTEMA CENTRAL DE GESTIÓN**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📍 **Jurisdicción Actual:** {chat.title}\n\n"
+                f"Seleccione el módulo que desea configurar:"
+            )
+            await message.answer(texto, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
+        else: 
+            await message.answer("⚠️ **Conexión Requerida:**\nPor favor, ejecuta `/panel` dentro del grupo que deseas administrar para sincronizar la base de datos.", parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("back_"))
 async def back_cb(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("⚙️ **Panel Principal**", reply_markup=get_main_keyboard(int(callback.data.split("_")[1])), parse_mode="Markdown")
+    group_id = int(callback.data.split("_")[1])
+    chat = await bot.get_chat(group_id)
+    texto = (
+        f"🛡️ **SISTEMA CENTRAL DE GESTIÓN**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📍 **Jurisdicción Actual:** {chat.title}\n\n"
+        f"Seleccione el módulo que desea configurar:"
+    )
+    await callback.message.edit_text(texto, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
+
+# --- MÓDULO AUTORIZAR STAFF ---
+@router.callback_query(F.data.startswith("addid_"))
+async def addid_cb(callback: CallbackQuery, state: FSMContext):
+    group_id = int(callback.data.split("_")[1])
+    await state.set_state(BotStates.waiting_for_id)
+    await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
+    await callback.message.edit_text(
+        "✍️ **Envía el ID numérico del usuario a autorizar.**\n\n_El usuario obtendrá acceso a los comandos y empezará a recibir copias espejo de los mensajes._", 
+        reply_markup=get_back_keyboard(group_id), 
+        parse_mode="Markdown"
+    )
+
+@router.message(BotStates.waiting_for_id)
+async def process_new_id(message: Message, state: FSMContext):
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    panel_msg_id = data.get("panel_msg_id")
+    await message.delete() 
+    try:
+        new_id = int(message.text.strip())
+        if group_id not in authorized_users:
+            authorized_users[group_id] = set()
+        authorized_users[group_id].add(new_id)
+        
+        texto_exito = (
+            f"✅ **Personal Autorizado**\n"
+            f"El ID `{new_id}` ha sido añadido al Staff temporal.\n"
+            f"Ahora podrá usar moderación y el Sistema Espejo le reenviará los mensajes."
+        )
+        await bot.edit_message_text(texto_exito, chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
+    except ValueError: pass
+    finally: await state.clear()
 
 @router.callback_query(F.data.startswith("cleanmenu_"))
 async def clean_menu_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
     if group_id not in next_cleanup_time:
         next_cleanup_time[group_id] = datetime.now() + timedelta(hours=12)
+    
     pending_media = len(media_to_delete.get(group_id, []))
     time_left = next_cleanup_time[group_id] - datetime.now()
     hours, remainder = divmod(int(time_left.total_seconds()), 3600)
     minutes, _ = divmod(remainder, 60)
+    
     text = (
-        f"🧹 **Gestión de Limpieza Multimedia**\n\n"
+        f"🧹 **MÓDULO DE LIMPIEZA MULTIMEDIA**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"📦 **Archivos en cola para borrar:** `{pending_media}`\n"
-        f"⏱️ **Próxima limpieza automática en:** `{hours}h {minutes}m`\n\n"
-        f"¿Deseas adelantar el proceso y borrar todo ahora?"
+        f"⏱️ **Próxima ejecución automática:** `{hours}h {minutes}m`\n\n"
+        f"⚠️ *Nota: Forzar la limpieza borrará inmediatamente los archivos acumulados y reiniciará el temporizador de 12 horas.*"
     )
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑️ Forzar Limpieza Ahora", callback_data=f"forceclean_{group_id}")],
-        [InlineKeyboardButton(text="⬅️ Volver al Panel", callback_data=f"back_{group_id}")]
+        [InlineKeyboardButton(text="🗑️ Ejecutar Limpieza Inmediata", callback_data=f"forceclean_{group_id}")],
+        [InlineKeyboardButton(text="🔙 Regresar al Menú Principal", callback_data=f"back_{group_id}")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("forceclean_"))
 async def force_clean_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
-    await callback.answer("Ejecutando limpieza manual...", show_alert=False)
+    await callback.answer("⏳ Inicializando protocolo de limpieza...", show_alert=False)
     count = await execute_cleanup(group_id, manual=True)
     await callback.message.edit_text(
-        f"✅ **Limpieza Finalizada**\nSe eliminaron {count} archivos.\nEl temporizador de 12 horas se ha reiniciado.",
+        f"✅ **Protocolo Finalizado Exitosamente**\nSe han purgado `{count}` archivos del servidor.\nEl reloj cíclico se ha restablecido a 12 horas.",
         reply_markup=get_back_keyboard(group_id),
         parse_mode="Markdown"
     )
@@ -374,7 +372,12 @@ async def show_perms_cb(callback: CallbackQuery):
     g_id = int(callback.data.split("_")[1])
     try:
         chat = await bot.get_chat(g_id)
-        await callback.message.edit_text(f"⚙️ **Configuración:**\nToca para (🟢) Permitir / (🔴) Denegar:", reply_markup=get_permissions_keyboard(g_id, chat.permissions or ChatPermissions()), parse_mode="Markdown")
+        text = (
+            f"⚙️ **MÓDULO DE PERMISOS GLOBALES**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Toque un interruptor para habilitar (✅) o restringir (❌) la función para todos los miembros del grupo:"
+        )
+        await callback.message.edit_text(text, reply_markup=get_permissions_keyboard(g_id, chat.permissions or ChatPermissions()), parse_mode="Markdown")
     except: pass
 
 @router.callback_query(F.data.startswith("tp_"))
@@ -390,20 +393,21 @@ async def toggle_perm_cb(callback: CallbackQuery):
         new_p = ChatPermissions(**p_dict)
         await bot.set_chat_permissions(g_id, new_p)
         await callback.message.edit_reply_markup(reply_markup=get_permissions_keyboard(g_id, new_p))
-    except: pass
+    except: 
+        await callback.answer("❌ Error: Verifica que el bot sea administrador con permisos de restricción.", show_alert=True)
 
 @router.callback_query(F.data.startswith("close_"))
 async def close_chat_cb(callback: CallbackQuery):
     try:
         await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=False))
-        await callback.answer("✅ Chat cerrado.", show_alert=True)
+        await callback.answer("🔒 Modo Estricto Activado: Grupo Silenciado.", show_alert=True)
     except: pass
 
 @router.callback_query(F.data.startswith("open_"))
 async def open_chat_cb(callback: CallbackQuery):
     try:
         await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=True, can_send_photos=True, can_send_videos=True, can_send_documents=True, can_send_audios=True, can_send_voice_notes=True, can_send_other_messages=True))
-        await callback.answer("✅ Chat abierto.", show_alert=True)
+        await callback.answer("🔓 Modo Libre Activado: Grupo Abierto.", show_alert=True)
     except: pass
 
 @router.callback_query(F.data.startswith("botperms_"))
@@ -411,7 +415,7 @@ async def show_bot_perms_cb(callback: CallbackQuery):
     g_id = int(callback.data.split("_")[1])
     try:
         member = await bot.get_chat_member(g_id, (await bot.me()).id)
-        txt = "🤖 **Permisos del Bot:**\n\n"
+        txt = "🤖 **AUDITORÍA DE SISTEMA (Privilegios del Bot):**\n━━━━━━━━━━━━━━━━━━\n\n"
         for attr, name in ADMIN_PERMS.items():
             txt += f"{'✅' if getattr(member, attr, False) else '❌'} {name}\n"
         await callback.message.edit_text(txt, reply_markup=get_back_keyboard(g_id), parse_mode="Markdown")
@@ -419,9 +423,17 @@ async def show_bot_perms_cb(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("help_"))
 async def help_cb(callback: CallbackQuery):
-    await callback.message.edit_text("📚 **Guía:**\n🔸 **IA:** Habla mencionándome o respondiendo a un mensaje mío.\n🔸 **Panel:** Permisos y Limpieza.\n🔸 **Respaldo:** Automático.\n🔸 **Mod:** /del, /ban, /unban, /pin.", reply_markup=get_back_keyboard(int(callback.data.split("_")[1])), parse_mode="Markdown")
+    texto = (
+        "📖 **MANUAL DE OPERACIONES**\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "🔸 **Sistema Espejo:** Todos los mensajes del grupo se reenvían al chat privado del staff autorizado.\n"
+        "🔸 **Panel Interactivo:** Administra bloqueos, aperturas y permisos globales al instante.\n"
+        "🔸 **Respaldo:** Todo archivo multimedia se copia automáticamente al canal bóveda.\n"
+        "🔸 **Comandos Administrativos:** Responde a un mensaje con `/del`, `/ban`, `/unban`, `/pin` para moderación rápida."
+    )
+    await callback.message.edit_text(texto, reply_markup=get_back_keyboard(int(callback.data.split("_")[1])), parse_mode="Markdown")
 
-# ================= ÁLBUMES =================
+# ================= AGRUPACIÓN DE ÁLBUMES =================
 async def process_album(media_group_id: str, chat_title: str):
     await asyncio.sleep(3)  
     if media_group_id not in album_cache: return
@@ -432,44 +444,33 @@ async def process_album(media_group_id: str, chat_title: str):
         caption = None
         if idx == 0:
             orig_cap = msg.caption or ""
-            caption = f"{orig_cap}\n\n📌 Enviado desde: {chat_title}" if orig_cap else f"📌 Enviado desde: {chat_title}"
-        if msg.photo: media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption))
-        elif msg.video: media_group.append(InputMediaVideo(media=msg.video.file_id, caption=caption))
-        elif msg.document: media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption))
+            caption = f"{orig_cap}\n\n📌 *Respaldo | {chat_title}*" if orig_cap else f"📌 *Respaldo | {chat_title}*"
+        if msg.photo: media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption, parse_mode="Markdown"))
+        elif msg.video: media_group.append(InputMediaVideo(media=msg.video.file_id, caption=caption, parse_mode="Markdown"))
+        elif msg.document: media_group.append(InputMediaDocument(media=msg.document.file_id, caption=caption, parse_mode="Markdown"))
     
     if media_group: await backup_queue.put({'type': 'album', 'media': media_group})
 
-# ================= FILTRO Y GESTIÓN DE MENSAJES =================
+# ================= NÚCLEO: GESTOR DE MENSAJES =================
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
+        # 1. 🔄 SISTEMA ESPEJO: Reenviar el mensaje a los Super Admins
+        await admin_notifier_queue.put(message)
+
+        # 2. Inicialización de reloj de limpieza si es la primera vez
+        if message.chat.id not in next_cleanup_time:
+            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
+
         content = message.text or message.caption or ""
         
-        # 1. Filtro Anti-links
+        # 3. Filtro Anti-links
         if content and LINK_REGEX.search(content) and not await is_admin(message.chat.id, message.from_user.id):
             try: await message.delete(); return
             except: pass
-
-        # 2. IA - Interacción Orgánica (Gemini)
-        if content:
-            bot_user = await bot.me()
-            is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.id == bot_user.id
-            is_mention = bot_user.username and f"@{bot_user.username}" in content
-            
-            if is_reply_to_bot or is_mention:
-                try:
-                    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-                    respuesta = await get_ia_response(message, message.from_user.first_name)
-                    
-                    # ✅ CORRECCIÓN AQUÍ: Solo responde si hay texto, evitando errores si la IA borró el mensaje
-                    if respuesta:
-                        await message.reply(respuesta)
-                        
-                except Exception as e:
-                    logging.error(f"Error en interacción IA: {e}")
         
-        # 3. Respaldo Multimedia y Limpieza
+        # 4. Respaldo Multimedia y Conteo
         if message.photo or message.video or message.document:
             u_id, c_id = message.from_user.id, message.chat.id
             
@@ -489,11 +490,11 @@ async def group_messages_processor(message: Message):
                 album_cache[g_id].append(message)
             else:
                 orig_cap = message.caption or ""
-                new_cap = f"{orig_cap}\n\n📌 Enviado desde: {message.chat.title}" if orig_cap else f"📌 Enviado desde: {message.chat.title}"
+                new_cap = f"{orig_cap}\n\n📌 *Respaldo | {message.chat.title}*" if orig_cap else f"📌 *Respaldo | {message.chat.title}*"
                 await backup_queue.put({'type': 'single', 'message': message, 'caption': new_cap})
 
 # ================= RENDER Y EJECUCIÓN =================
-async def handle(request): return web.Response(text="Bot is running!")
+async def handle(request): return web.Response(text="Bot of Imperio Otomano is running smoothly!")
 
 async def web_server():
     app = web.Application(); app.router.add_get("/", handle)
@@ -505,7 +506,8 @@ async def main():
     asyncio.create_task(web_server())
     asyncio.create_task(backup_worker()) 
     asyncio.create_task(auto_cleanup_worker()) 
-    print("🤖 Bot iniciado y corriendo...")
+    asyncio.create_task(admin_notifier_worker()) # Inicia el trabajador de los reenvíos a Admins
+    print("🛡️ Bot Iniciado: Modos Profesionales y Sistema Espejo Activos...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
