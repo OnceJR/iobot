@@ -15,7 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
-TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
+TOKEN = "8611966815:AAE2biZEsdWl_r-k4E1EBBT0XOMqIuLEFk0"
 BACKUP_CHANNEL_ID = -1004487581286  # ID DE TU CANAL PRIVADO UNICO
 
 # URL DE MONGODB (Reemplazar con la tuya)
