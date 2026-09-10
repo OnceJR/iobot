@@ -3,6 +3,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 from aiohttp import web
+from motor.motor_asyncio import AsyncIOMotorClient
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions,
@@ -15,24 +16,26 @@ from aiogram.fsm.state import State, StatesGroup
 
 # ================= CONFIGURACIÓN =================
 TOKEN = "8617656338:AAHCIBGHaC3FFt2jbAMk5mcdWMU__p3qTOg"
-BACKUP_CHANNEL_ID = -1003986866749  # ID DE TU CANAL PRIVADO UNICO
+BACKUP_CHANNEL_ID = -1004487581286  # ID DE TU CANAL PRIVADO UNICO
 
-# ID DEL JEFE SUPREMO (Solo tú. Los demás se agregan desde el panel)
+# URL DE MONGODB (Reemplazar con la tuya)
+MONGO_URI = "mongodb+srv://carlosjrpelegrina_db_user:1DNyN9AFa9bh1tCr@cluster0.haf2f1l.mongodb.net" 
+
+# ID DEL JEFE SUPREMO (Solo tú)
 DESIGNATED_USERS = {8983189714}
 
 LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 
-active_groups = {}          
-authorized_users = {}       
+# ================= CONEXIÓN A MONGODB =================
+client = AsyncIOMotorClient(MONGO_URI)
+db = client.imperio_bot  # Nombre de la base de datos
+groups_col = db.groups   # Colección para configuración de grupos
+stats_col = db.stats     # Colección para estadísticas de usuarios
+admins_col = db.admins   # Colección para sesiones de panel (Admins)
+
+# ================= CACHÉ EN MEMORIA (Transitorio) =================
 album_cache = {}  
-media_counts = {}              
-
-# Colas de tareas asíncronas (Antiflood)
 backup_queue = asyncio.Queue()
-admin_notifier_queue = asyncio.Queue()
-
-media_to_delete = {}  
-next_cleanup_time = {}  
 
 # ================= DICCIONARIOS DE PERMISOS =================
 PERM_MAPPING = {
@@ -70,7 +73,12 @@ class BotStates(StatesGroup):
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
     if user_id in DESIGNATED_USERS: return True
-    if chat_id in authorized_users and user_id in authorized_users[chat_id]: return True
+    
+    # Validar administradores autorizados en MongoDB
+    group_data = await groups_col.find_one({"_id": chat_id})
+    if group_data and user_id in group_data.get("authorized_users", []):
+        return True
+        
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
@@ -106,27 +114,7 @@ def get_permissions_keyboard(group_id: int, perms: ChatPermissions) -> InlineKey
 
 # ================= WORKERS EN SEGUNDO PLANO =================
 
-# 1. Notificador de Admins (El Espejo Multimedia)
-async def admin_notifier_worker():
-    """Reenvía únicamente fotos, videos y documentos a ti y al staff autorizado."""
-    while True:
-        msg = await admin_notifier_queue.get()
-        group_id = msg.chat.id
-        
-        receivers = set(DESIGNATED_USERS)
-        if group_id in authorized_users:
-            receivers.update(authorized_users[group_id])
-            
-        for admin_id in receivers:
-            try:
-                await msg.forward(chat_id=admin_id)
-                await asyncio.sleep(0.5)  
-            except Exception: 
-                pass  
-                
-        admin_notifier_queue.task_done()
-
-# 2. Respaldo al Canal Privado
+# 1. Respaldo al Canal Privado
 async def backup_worker():
     """Sube fotos y videos al canal de respaldo de forma segura."""
     while True:
@@ -141,12 +129,16 @@ async def backup_worker():
         except: pass
         finally: backup_queue.task_done()
 
-# 3. Limpieza Automática de 12 horas
+# 2. Limpieza Automática de 12 horas (Con MongoDB)
 async def execute_cleanup(chat_id: int, manual=False):
-    messages = media_to_delete.get(chat_id, [])
+    group = await groups_col.find_one({"_id": chat_id})
+    if not group: return 0
+    
+    messages = group.get("media_to_delete", [])
     if not messages:
-        next_cleanup_time[chat_id] = datetime.now() + timedelta(hours=12)
+        await groups_col.update_one({"_id": chat_id}, {"$set": {"next_cleanup": datetime.now() + timedelta(hours=12)}})
         return 0
+        
     count = len(messages)
     chunk_size = 100
     for i in range(0, count, chunk_size):
@@ -155,10 +147,12 @@ async def execute_cleanup(chat_id: int, manual=False):
         except Exception: pass
         await asyncio.sleep(1) 
     
-    media_to_delete[chat_id] = []
-    next_cleanup_time[chat_id] = datetime.now() + timedelta(hours=12)
-    tipo = "manual" if manual else "automática"
+    await groups_col.update_one(
+        {"_id": chat_id}, 
+        {"$set": {"media_to_delete": [], "next_cleanup": datetime.now() + timedelta(hours=12)}}
+    )
     
+    tipo = "manual" if manual else "automática"
     try:
         msg = await bot.send_message(
             chat_id, 
@@ -172,18 +166,24 @@ async def execute_cleanup(chat_id: int, manual=False):
 async def auto_cleanup_worker():
     while True:
         now = datetime.now()
-        for chat_id, next_time in list(next_cleanup_time.items()):
-            if now >= next_time:
-                await execute_cleanup(chat_id)
+        # Busca en MongoDB los grupos cuyo tiempo de limpieza ya se cumplió
+        cursor = groups_col.find({"next_cleanup": {"$lte": now}})
+        async for group in cursor:
+            await execute_cleanup(group["_id"])
         await asyncio.sleep(60) 
 
 # ================= COMANDOS DE MODERACIÓN (GRUPO) =================
 @router.message(Command("panel"))
 async def link_group_panel(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
-        active_groups[message.from_user.id] = message.chat.id
-        if message.chat.id not in next_cleanup_time:
-            next_cleanup_time[message.chat.id] = datetime.now() + timedelta(hours=12)
+        # Guardar en MongoDB cuál es el grupo activo para el panel del admin
+        await admins_col.update_one({"_id": message.from_user.id}, {"$set": {"active_group": message.chat.id}}, upsert=True)
+        
+        # Inicializar tiempo de limpieza si no existe
+        group = await groups_col.find_one({"_id": message.chat.id})
+        if not group or "next_cleanup" not in group:
+            await groups_col.update_one({"_id": message.chat.id}, {"$set": {"next_cleanup": datetime.now() + timedelta(hours=12)}}, upsert=True)
+            
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🖥️ Abrir Consola de Mando", url=f"t.me/{(await bot.me()).username}?start=panel")]])
         await message.reply("🛡️ **Conexión Establecida.**\nSu panel de control está listo para ser utilizado en el chat privado.", reply_markup=kb, parse_mode="Markdown")
 
@@ -249,16 +249,22 @@ async def repeat_cmd(message: Message):
 async def check_stats_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-        data = media_counts.get(target.id, {"count": 0})
-        await message.reply(f"📈 **Estadísticas de Aportes:**\n👤 {target.first_name} ha compartido `{data['count']}` archivos multimedia.", parse_mode="Markdown")
+        
+        user_stat = await stats_col.find_one({"_id": target.id})
+        count = user_stat.get("count", 0) if user_stat else 0
+        
+        await message.reply(f"📈 **Estadísticas de Aportes:**\n👤 {target.first_name} ha compartido `{count}` archivos multimedia.", parse_mode="Markdown")
 
 @router.message(Command("topaportes"))
 async def top_stats_cmd(message: Message):
-    if not media_counts:
-        return await message.reply("📉 Aún no hay registros de aportes en esta sesión.", parse_mode="Markdown")
-    sorted_counts = sorted(media_counts.values(), key=lambda x: x["count"], reverse=True)[:10]
+    cursor = stats_col.find().sort("count", -1).limit(10)
+    top_users = await cursor.to_list(length=10)
+    
+    if not top_users:
+        return await message.reply("📉 Aún no hay registros de aportes en la base de datos.", parse_mode="Markdown")
+        
     text = "🏆 **Cuadro de Honor - Top 10 Aportadores:**\n\n"
-    for i, data in enumerate(sorted_counts, 1):
+    for i, data in enumerate(top_users, 1):
         text += f"**{i}.** {data['name']} — `{data['count']}` archivos\n"
     await message.reply(text, parse_mode="Markdown")
 
@@ -268,10 +274,13 @@ async def start_private_panel(message: Message, state: FSMContext):
     if message.chat.type == "private":
         await state.clear()
         
-        if message.from_user.id not in DESIGNATED_USERS and message.from_user.id not in active_groups:
+        # Validamos si es Admin buscando su sesión guardada o si es Super Admin
+        admin_data = await admins_col.find_one({"_id": message.from_user.id})
+        group_id = admin_data.get("active_group") if admin_data else None
+
+        if message.from_user.id not in DESIGNATED_USERS and not group_id:
             return await message.answer("Hola. Soy el sistema de gestión del Imperio Otomano.\n*No tienes autorización para acceder al panel de control.*", parse_mode="Markdown")
 
-        group_id = active_groups.get(message.from_user.id)
         if group_id:
             chat = await bot.get_chat(group_id)
             texto = (
@@ -304,7 +313,7 @@ async def addid_cb(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_for_id)
     await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
     await callback.message.edit_text(
-        "✍️ **Envía el ID numérico del usuario a autorizar.**\n\n_El usuario obtendrá acceso a los comandos y empezará a recibir copias espejo de la multimedia._", 
+        "✍️ **Envía el ID numérico del usuario a autorizar.**\n\n_El usuario obtendrá acceso a los comandos administrativos del bot de forma permanente en este grupo._", 
         reply_markup=get_back_keyboard(group_id), 
         parse_mode="Markdown"
     )
@@ -317,14 +326,14 @@ async def process_new_id(message: Message, state: FSMContext):
     await message.delete() 
     try:
         new_id = int(message.text.strip())
-        if group_id not in authorized_users:
-            authorized_users[group_id] = set()
-        authorized_users[group_id].add(new_id)
+        
+        # Agregamos al usuario a la lista de MongoDB (sin duplicar con $addToSet)
+        await groups_col.update_one({"_id": group_id}, {"$addToSet": {"authorized_users": new_id}}, upsert=True)
         
         texto_exito = (
             f"✅ **Personal Autorizado**\n"
-            f"El ID `{new_id}` ha sido añadido al Staff temporal.\n"
-            f"Ahora podrá usar moderación y el Sistema Espejo le reenviará los archivos multimedia."
+            f"El ID `{new_id}` ha sido añadido al Staff de la base de datos.\n"
+            f"Ahora podrá usar las funciones de moderación."
         )
         await bot.edit_message_text(texto_exito, chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id), parse_mode="Markdown")
     except ValueError: pass
@@ -333,12 +342,13 @@ async def process_new_id(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cleanmenu_"))
 async def clean_menu_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
-    if group_id not in next_cleanup_time:
-        next_cleanup_time[group_id] = datetime.now() + timedelta(hours=12)
     
-    pending_media = len(media_to_delete.get(group_id, []))
-    time_left = next_cleanup_time[group_id] - datetime.now()
-    hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+    group = await groups_col.find_one({"_id": group_id})
+    pending_media = len(group.get("media_to_delete", [])) if group else 0
+    next_time = group.get("next_cleanup", datetime.now()) if group else datetime.now()
+    
+    time_left = next_time - datetime.now()
+    hours, remainder = divmod(max(0, int(time_left.total_seconds())), 3600)
     minutes, _ = divmod(remainder, 60)
     
     text = (
@@ -361,7 +371,7 @@ async def force_clean_cb(callback: CallbackQuery):
     await callback.answer("⏳ Inicializando protocolo de limpieza...", show_alert=False)
     count = await execute_cleanup(group_id, manual=True)
     await callback.message.edit_text(
-        f"✅ **Protocolo Finalizado Exitosamente**\nSe han purgado `{count}` archivos del servidor.\nEl reloj cíclico se ha restablecido a 12 horas.",
+        f"✅ **Protocolo Finalizado Exitosamente**\nSe han purgado `{count}` archivos de la base de datos.\nEl reloj cíclico se ha restablecido a 12 horas.",
         reply_markup=get_back_keyboard(group_id),
         parse_mode="Markdown"
     )
@@ -423,10 +433,10 @@ async def show_bot_perms_cb(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("help_"))
 async def help_cb(callback: CallbackQuery):
     texto = (
-        "📖 **MANUAL DE OPERACIONES**\n"
+        "📖 **MANUAL DE OPERACIONES (Imperio Otomano)**\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "🔸 **Sistema Espejo Multimedia:** Solo las fotos, videos y documentos enviados al grupo se reenvían al chat privado del staff.\n"
-        "🔸 **Panel Interactivo:** Administra bloqueos, aperturas y permisos globales al instante.\n"
+        "🔸 **Sistema Anti-Bots:** Si alguien no autorizado añade un bot, este será detectado y baneado inmediatamente.\n"
+        "🔸 **Panel Interactivo:** Administra bloqueos, aperturas y permisos globales.\n"
         "🔸 **Respaldo:** Todo archivo multimedia se copia automáticamente al canal bóveda.\n"
         "🔸 **Comandos Administrativos:** Responde a un mensaje con `/del`, `/ban`, `/unban`, `/pin` para moderación rápida."
     )
@@ -450,33 +460,67 @@ async def process_album(media_group_id: str, chat_title: str):
     
     if media_group: await backup_queue.put({'type': 'album', 'media': media_group})
 
+
+# ================= SISTEMA ANTI-BOTS =================
+@router.message(F.new_chat_members)
+async def anti_bot_new_members(message: Message):
+    """Detecta cuando alguien añade a nuevos miembros al grupo."""
+    if message.chat.type in ["group", "supergroup"]:
+        adder_id = message.from_user.id
+        is_adder_admin = await is_admin(message.chat.id, adder_id)
+        
+        for member in message.new_chat_members:
+            if member.is_bot and member.id != bot.id:
+                if not is_adder_admin:
+                    try:
+                        await bot.ban_chat_member(message.chat.id, member.id)
+                        await message.reply(f"🛡️ **Sistema Anti-Bots:** El bot {member.first_name} ha sido erradicado. Solo los administradores pueden invitar bots.")
+                    except:
+                        pass
+
 # ================= NÚCLEO: GESTOR DE MENSAJES =================
 @router.message()
 async def group_messages_processor(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         
+        # 1. Anti-Bots Activo (Por si un bot infiltrado intenta hablar)
+        if message.from_user.is_bot and message.from_user.id != bot.id:
+            if not await is_admin(message.chat.id, message.from_user.id):
+                try:
+                    await bot.ban_chat_member(message.chat.id, message.from_user.id)
+                    await message.delete()
+                except: pass
+                return # Detiene la ejecución aquí mismo
+        
         content = message.text or message.caption or ""
         
-        # 1. Filtro Anti-links
+        # 2. Filtro Anti-links
         if content and LINK_REGEX.search(content) and not await is_admin(message.chat.id, message.from_user.id):
             try: await message.delete(); return
             except: pass
         
-        # 2. Respaldo Multimedia, Conteo y Espejo (Estrictamente Fotos, Videos y Documentos)
+        # 3. Respaldo Multimedia, Conteo MongoDB y Limpieza
         if message.photo or message.video or message.document:
             u_id, c_id = message.from_user.id, message.chat.id
             
-            # 🔄 SISTEMA ESPEJO MULTIMEDIA: Enviar a admins solo si es multimedia
-            await admin_notifier_queue.put(message)
-            
-            # Solo acumulamos para borrar si el grupo ya activó el panel (/panel)
-            if c_id in next_cleanup_time:
-                if c_id not in media_to_delete: media_to_delete[c_id] = []
-                media_to_delete[c_id].append(message.message_id)
+            # Guardamos el archivo en MongoDB para su futura limpieza
+            await groups_col.update_one(
+                {"_id": c_id}, 
+                {
+                    "$push": {"media_to_delete": message.message_id},
+                    "$setOnInsert": {"next_cleanup": datetime.now() + timedelta(hours=12)}
+                }, 
+                upsert=True
+            )
 
-            if u_id not in media_counts: media_counts[u_id] = {"name": message.from_user.first_name, "count": 0}
-            media_counts[u_id]["count"] += 1
+            # Actualizamos las estadísticas en MongoDB
+            await stats_col.update_one(
+                {"_id": u_id},
+                {"$inc": {"count": 1}, "$set": {"name": message.from_user.first_name}},
+                upsert=True
+            )
 
+            # Proceso de envío al canal privado
             if message.media_group_id:
                 g_id = message.media_group_id
                 if g_id not in album_cache:
@@ -489,7 +533,7 @@ async def group_messages_processor(message: Message):
                 await backup_queue.put({'type': 'single', 'message': message, 'caption': new_cap})
 
 # ================= RENDER Y EJECUCIÓN =================
-async def handle(request): return web.Response(text="Bot of Imperio Otomano is running smoothly!")
+async def handle(request): return web.Response(text="Bot del Imperio Otomano is running smoothly on MongoDB!")
 
 async def web_server():
     app = web.Application(); app.router.add_get("/", handle)
@@ -501,8 +545,7 @@ async def main():
     asyncio.create_task(web_server())
     asyncio.create_task(backup_worker()) 
     asyncio.create_task(auto_cleanup_worker()) 
-    asyncio.create_task(admin_notifier_worker()) 
-    print("🛡️ Bot Iniciado: Espejo Multimedia Exclusivo Activo...")
+    print("🛡️ Bot Iniciado: Sistema de Gestión MongoDB y Anti-Bots Activos...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
