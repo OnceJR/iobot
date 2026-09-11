@@ -151,7 +151,7 @@ async def auto_cleanup_worker():
         await asyncio.sleep(60) 
 
 # ================= COMANDOS DE MODERACIÓN Y CONTROL =================
-@router.message(Command("panelimperio"))
+@router.message(Command("panel"))
 async def link_group_panel(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
         await admins_col.update_one({"_id": message.from_user.id}, {"$set": {"active_group": message.chat.id}}, upsert=True)
@@ -386,7 +386,7 @@ async def top_stats_cmd(message: Message):
         await message.reply(text)
 
 # ================= COMANDO FANTASMA: LEYES / REGLAS =================
-@router.message(Command("leyesimperio", "reglasimperio", "leyes", "reglas"))
+@router.message(Command("leyes", "reglas"))
 async def rules_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         rules_text = (
@@ -436,7 +436,7 @@ async def start_private_panel(message: Message, state: FSMContext):
             )
             await message.answer(texto, reply_markup=get_main_keyboard(group_id))
         else: 
-            await message.answer("⚠️ <b>Conexión Requerida:</b>\nPor favor, ejecuta <code>/panelimperio</code> dentro del grupo que deseas administrar.")
+            await message.answer("⚠️ <b>Conexión Requerida:</b>\nPor favor, ejecuta <code>/panel</code> dentro del grupo que deseas administrar.")
 
 @router.callback_query(F.data.startswith("back_"))
 async def back_cb(callback: CallbackQuery, state: FSMContext):
@@ -714,19 +714,19 @@ async def help_cb(callback: CallbackQuery):
     texto = (
         "📖 <b>MANUAL DE OPERACIONES IMPERIAL</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "🔸 <b>/panelimperio</b> (en grupo): Genera acceso directo al panel privado.\n"
-        "🔸 <b>/delimperio</b>: Borra el mensaje al que respondes.\n"
-        "🔸 <b>/banimperio</b>: Expulsa y banea permanentemente al usuario.\n"
-        "🔸 <b>/unbanimperio</b>: Revoca el baneo de un usuario.\n"
-        "🔸 <b>/muteimperio [tiempo]</b>: Silencia temporalmente (ej. 30m, 2h, 1d).\n"
-        "🔸 <b>/unmuteimperio</b>: Restablece la voz al usuario.\n"
-        "🔸 <b>/warnimperio</b>: Aplica advertencia (3 warns = baneo automático).\n"
-        "🔸 <b>/unwarnimperio</b>: Limpia las advertencias del usuario.\n"
-        "🔸 <b>/delallimperio</b>: Purga el historial del usuario con opciones.\n"
-        "🔸 <b>/pinimperio</b>: Fija el mensaje seleccionado.\n"
+        "🔸 <b>/panel</b> (en grupo): Genera acceso directo al panel privado.\n"
+        "🔸 <b>/del</b>: Borra el mensaje al que respondes.\n"
+        "🔸 <b>/ban</b>: Expulsa y banea permanentemente al usuario.\n"
+        "🔸 <b>/unban</b>: Revoca el baneo de un usuario.\n"
+        "🔸 <b>/mute [tiempo]</b>: Silencia temporalmente (ej. 30m, 2h, 1d).\n"
+        "🔸 <b>/unmute</b>: Restablece la voz al usuario.\n"
+        "🔸 <b>/warn</b>: Aplica advertencia (3 warns = baneo automático).\n"
+        "🔸 <b>/unwarn</b>: Limpia las advertencias del usuario.\n"
+        "🔸 <b>/delall</b>: Purga el historial del usuario con opciones.\n"
+        "🔸 <b>/pin</b>: Fija el mensaje seleccionado.\n"
         "🔸 <b>/s o .s</b>: Réplica fantasma (el bot copia tu texto/archivo y borra el tuyo).\n"
-        "🔸 <b>/aportesimperio /topimperio</b>: Estadísticas y cuadro de honor semanal.\n"
-        "🔸 <b>/leyesimperio /reglasimperio</b>: Muestra el código de conducta (autodestrucción en 30s).\n"
+        "🔸 <b>/aportes /topaportes</b>: Estadísticas y cuadro de honor semanal.\n"
+        "🔸 <b>/leyes /reglas</b>: Muestra el código de conducta (autodestrucción en 30s).\n"
         "🔸 <b>Filtro de Enlaces:</b> Se borran automáticamente todos los links y enlaces del grupo.\n"
         "🔸 <b>Anti-Bots:</b> Baneo automático a bots intrusos no autorizados."
     )
