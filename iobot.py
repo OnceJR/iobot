@@ -64,7 +64,10 @@ router = Router()
 
 class BotStates(StatesGroup):
     waiting_for_id = State()
+    waiting_for_rmid = State()
     waiting_for_badword = State()
+    waiting_for_pwd_close = State()
+    waiting_for_pwd_open = State()
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
     if user_id in DESIGNATED_USERS: return True
