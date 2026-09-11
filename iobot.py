@@ -28,7 +28,7 @@ LINK_REGEX = re.compile(r'(https?://|www\.|t\.me/)', re.IGNORECASE)
 # ================= CONEXIÓN A MONGODB =================
 client = AsyncIOMotorClient(MONGO_URI)
 db = client.imperio_bot
-groups_col = db.groups      # Configuración de grupos, IDs autorizados, limpieza y blacklist
+groups_col = db.groups      # Configuración de grupos, IDs, limpieza y blacklist
 stats_col = db.stats        # Estadísticas de aportes semanales
 admins_col = db.admins      # Sesiones del panel de control
 warns_col = db.warns        # Registro de advertencias de usuarios
@@ -88,7 +88,7 @@ def get_main_keyboard(group_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🤖 Auditoría", callback_data=f"botperms_{group_id}")],
         [InlineKeyboardButton(text="🧹 Limpieza Automática", callback_data=f"cleanmenu_{group_id}"),
          InlineKeyboardButton(text="🤬 Lista Negra", callback_data=f"badwords_{group_id}")], 
-        [InlineKeyboardButton(text="🔑 Autorizar Staff", callback_data=f"addid_{group_id}"),
+        [InlineKeyboardButton(text="🔑 Gestionar Staff", callback_data=f"staffmenu_{group_id}"),
          InlineKeyboardButton(text="📖 Manual de Uso", callback_data=f"help_{group_id}")]
     ])
 
@@ -162,13 +162,13 @@ async def link_group_panel(message: Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🖥️ Abrir Consola", url=f"t.me/{(await bot.me()).username}?start=panel")]])
         await message.reply("🛡️ <b>Conexión Establecida.</b>\nSu panel de control está listo en el chat privado.", reply_markup=kb)
 
-@router.message(Command("delimperio"))
+@router.message(Command("del"))
 async def delete_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         try: await message.reply_to_message.delete(); await message.delete()
         except: pass
 
-@router.message(Command("banimperio"))
+@router.message(Command("ban"))
 async def ban_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         try:
@@ -179,7 +179,7 @@ async def ban_cmd(message: Message):
             await asyncio.sleep(5); await c.delete()
         except: pass
 
-@router.message(Command("unbanimperio"))
+@router.message(Command("unban"))
 async def unban_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
         u_id = message.reply_to_message.from_user.id if message.reply_to_message else (int(message.text.split()[1]) if len(message.text.split())>1 and message.text.split()[1].isdigit() else None)
@@ -191,7 +191,7 @@ async def unban_cmd(message: Message):
                 await asyncio.sleep(5); await c.delete()
             except: pass
 
-@router.message(Command("muteimperio"))
+@router.message(Command("mute"))
 async def mute_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         args = message.text.split()
@@ -217,7 +217,7 @@ async def mute_cmd(message: Message):
             await asyncio.sleep(5); await c.delete()
         except: pass
 
-@router.message(Command("unmuteimperio"))
+@router.message(Command("unmute"))
 async def unmute_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         try:
@@ -235,7 +235,7 @@ async def unmute_cmd(message: Message):
             await asyncio.sleep(5); await c.delete()
         except: pass
 
-@router.message(Command("warnimperio"))
+@router.message(Command("warn"))
 async def warn_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         target = message.reply_to_message.from_user
@@ -257,7 +257,7 @@ async def warn_cmd(message: Message):
         await message.delete()
         await asyncio.sleep(5); await c.delete()
 
-@router.message(Command("unwarnimperio"))
+@router.message(Command("unwarn"))
 async def unwarn_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         target = message.reply_to_message.from_user
@@ -266,7 +266,7 @@ async def unwarn_cmd(message: Message):
         await message.delete()
         await asyncio.sleep(5); await c.delete()
 
-@router.message(Command("delallimperio"))
+@router.message(Command("delall"))
 async def delall_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         target = message.reply_to_message.from_user
@@ -297,7 +297,7 @@ async def process_delban(callback: CallbackQuery):
         except Exception:
             await callback.message.edit_text("❌ Error al procesar el baneo del usuario.")
 
-@router.message(Command("pinimperio"))
+@router.message(Command("pin"))
 async def pin_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id) and message.reply_to_message:
         try: await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id); await message.delete()
@@ -318,7 +318,7 @@ async def repeat_cmd(message: Message):
         except: pass
 
 # ================= MÓDULO: APORTES SEMANALES CON GRÁFICO IMPERIAL =================
-@router.message(Command("aportesimperio"))
+@router.message(Command("aportes"))
 async def check_stats_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
@@ -329,7 +329,7 @@ async def check_stats_cmd(message: Message):
         
         await message.reply(f"📈 <b>Estadísticas de {target.first_name}</b>\nHa aportado <code>{count}</code> archivos multimedia <b>esta semana</b>.")
 
-@router.message(Command("topimperio"))
+@router.message(Command("topaportes"))
 async def top_stats_cmd(message: Message):
     current_week = datetime.now().strftime("%Y-W%V")
     cursor = stats_col.find({"week": current_week}).sort("count", -1).limit(10)
@@ -386,16 +386,22 @@ async def top_stats_cmd(message: Message):
         await message.reply(text)
 
 # ================= COMANDO FANTASMA: LEYES / REGLAS =================
-@router.message(Command("leyesimperio", "reglasimperio"))
+@router.message(Command("leyesimperio", "reglasimperio", "leyes", "reglas"))
 async def rules_cmd(message: Message):
     if message.chat.type in ["group", "supergroup"]:
         rules_text = (
-            "⚖️ <b>CÓDIGO DE CONDUCTA - IMPERIO OTOMANO</b> ⚖️\n\n"
-            "1. <b>Cero Enlaces Externos:</b> Prohibidas las URL planas. Solo se permiten hipervínculos ('Crear enlace').\n"
-            "2. <b>Respeto a la Jerarquía:</b> Las órdenes de los Administradores y del Jefe Supremo son absolutas.\n"
-            "3. <b>Sistema de Advertencias:</b> 3 Warns equivalen a expulsión automática permanente.\n"
-            "4. <b>Convivencia Sana:</b> Queda prohibido el spam o lenguaje de la lista negra.\n\n"
-            "<i>⏳ Este mensaje y tu comando se autodestruirán en 30 segundos para mantener el chat limpio.</i>"
+            "🏛️ <b>LEYES DEL IMPERIO OTOMANO</b> 🏛️\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "🔗 <b>1.</b> Cero links o enlaces externos.\n"
+            "🛡️ <b>2.</b> Prohibido el acoso (especialmente a mujeres).\n"
+            "⚔️ <b>3.</b> Cero peleas ni toxicidad.\n"
+            "⚠️ <b>4.</b> Prohibido contenido explícito no solicitado.\n"
+            "💼 <b>5.</b> Venta de contenido solo con permiso de admins.\n"
+            "📨 <b>6.</b> Cero spam o publicidad masiva.\n"
+            "🗣️ <b>7.</b> Chat exclusivamente en <b>español</b>.\n"
+            "⚖️ <b>8.</b> Cero contenido ilegal.\n\n"
+            "👇 <i>Reacciona a este mensaje para aceptar las reglas.</i>\n\n"
+            "<i>⏳ Este mensaje y tu comando se autodestruirán en 30 segundos.</i>"
         )
         
         bot_msg = await message.reply(rules_text)
@@ -470,8 +476,6 @@ async def process_new_id(message: Message, state: FSMContext):
     await message.delete() 
     try:
         new_id = int(message.text.strip())
-        
-        # Obtenemos el nombre del usuario y la fecha actual
         try:
             user_info = await bot.get_chat(new_id)
             name = user_info.first_name or "Desconocido"
@@ -480,7 +484,6 @@ async def process_new_id(message: Message, state: FSMContext):
             
         date_added = datetime.now().strftime("%d/%m/%Y")
         
-        # Guardamos el ID en la lista de autorizados Y los detalles en un diccionario
         await groups_col.update_one(
             {"_id": group_id}, 
             {
@@ -506,7 +509,6 @@ async def process_rm_id(message: Message, state: FSMContext):
     await message.delete() 
     try:
         rm_id = int(message.text.strip())
-        # Borramos al usuario tanto de la lista de permisos como de los detalles
         await groups_col.update_one(
             {"_id": group_id}, 
             {
@@ -518,10 +520,8 @@ async def process_rm_id(message: Message, state: FSMContext):
     except ValueError: pass
     finally: await state.clear()
 
-# --- FUNCIÓN EXCLUSIVA DEL JEFE SUPREMO ---
 @router.callback_query(F.data.startswith("viewstaff_"))
 async def view_staff_cb(callback: CallbackQuery):
-    # Validamos que SOLAMENTE el Jefe Supremo pueda entrar
     if callback.from_user.id not in DESIGNATED_USERS:
         return await callback.answer("🛑 Acceso Denegado: Solo el Jefe Supremo puede ver esta información.", show_alert=True)
         
@@ -535,9 +535,7 @@ async def view_staff_cb(callback: CallbackQuery):
     staff_details = group.get("staff_details", {})
     
     text = "👑 <b>LISTA OFICIAL DE STAFF</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-    
     for uid in staff_ids:
-        # Extraemos los datos si existen, de lo contrario mostramos un valor por defecto
         details = staff_details.get(str(uid), {})
         name = details.get("name", "Antiguo Miembro (Sin registrar)")
         date_added = details.get("date", "Fecha no registrada")
@@ -550,10 +548,9 @@ async def view_staff_cb(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Regresar", callback_data=f"staffmenu_{group_id}")]
     ])
-    
     await callback.message.edit_text(text, reply_markup=kb)
 
-# --- MÓDULO LISTA NEGRA ---
+# --- MÓDULO LISTA NEGRA MASIVA ---
 @router.callback_query(F.data.startswith("badwords_"))
 async def badwords_menu_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
@@ -561,10 +558,10 @@ async def badwords_menu_cb(callback: CallbackQuery):
     words = group.get("blacklist", []) if group else []
     
     words_str = ", ".join([f"<code>{w}</code>" for w in words]) if words else "<i>No hay palabras registradas.</i>"
-    text = f"🤬 <b>MÓDULO DE LISTA NEGRA</b>\n━━━━━━━━━━━━━━━━━━\n\nPalabras Prohibidas:\n{words_str}\n\n¿Deseas agregar una nueva palabra?"
+    text = f"🤬 <b>MÓDULO DE LISTA NEGRA</b>\n━━━━━━━━━━━━━━━━━━\n\nPalabras Prohibidas:\n{words_str}\n\n¿Deseas agregar palabras?"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Agregar Palabra Prohibida", callback_data=f"addword_{group_id}")],
+        [InlineKeyboardButton(text="➕ Agregar Palabras (Lista)", callback_data=f"addword_{group_id}")],
         [InlineKeyboardButton(text="🔙 Regresar", callback_data=f"back_{group_id}")]
     ])
     await callback.message.edit_text(text, reply_markup=kb)
@@ -574,19 +571,20 @@ async def addword_cb(callback: CallbackQuery, state: FSMContext):
     group_id = int(callback.data.split("_")[1])
     await state.set_state(BotStates.waiting_for_badword)
     await state.update_data(group_id=group_id, panel_msg_id=callback.message.message_id)
-    await callback.message.edit_text("✍️ <b>Escribe la palabra o frase que deseas prohibir:</b>", reply_markup=get_back_keyboard(group_id))
+    await callback.message.edit_text("✍️ <b>Escribe o pega las palabras a prohibir:</b>\n<i>Puedes enviarlas separadas por comas o saltos de línea para agregarlas en masa.</i>", reply_markup=get_back_keyboard(group_id))
 
 @router.message(BotStates.waiting_for_badword)
 async def process_new_badword(message: Message, state: FSMContext):
     data = await state.get_data()
     group_id = data.get("group_id")
     panel_msg_id = data.get("panel_msg_id")
-    word = message.text.strip().lower()
+    
+    words = [w.strip().lower() for w in re.split(r'[,\n]+', message.text) if w.strip()]
     await message.delete()
     
-    if word:
-        await groups_col.update_one({"_id": group_id}, {"$addToSet": {"blacklist": word}}, upsert=True)
-        await bot.edit_message_text(f"✅ <b>Palabra Registrada:</b> <code>{word}</code> se añadió a la lista negra.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+    if words:
+        await groups_col.update_one({"_id": group_id}, {"$addToSet": {"blacklist": {"$each": words}}}, upsert=True)
+        await bot.edit_message_text(f"✅ <b>Lista Actualizada:</b> Se añadieron <code>{len(words)}</code> palabra(s) a la lista negra.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
     await state.clear()
 
 # --- MÓDULO LIMPIEZA ---
@@ -625,6 +623,7 @@ async def force_clean_cb(callback: CallbackQuery):
         reply_markup=get_back_keyboard(group_id)
     )
 
+# --- MÓDULO PERMISOS CORREGIDO ---
 @router.callback_query(F.data.startswith("perms_"))
 async def show_perms_cb(callback: CallbackQuery):
     g_id = int(callback.data.split("_")[1])
@@ -640,29 +639,64 @@ async def toggle_perm_cb(callback: CallbackQuery):
     g_id = int(g_id_str)
     try:
         chat = await bot.get_chat(g_id)
-        cur = chat.permissions or ChatPermissions()
+        cur = chat.permissions
+        if not cur:
+            cur = ChatPermissions(
+                can_send_messages=True, can_send_photos=True, can_send_videos=True, 
+                can_send_documents=True, can_send_audios=True, can_send_voice_notes=True, 
+                can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, 
+                can_change_info=False, can_invite_users=True, can_pin_messages=False
+            )
+        p_dict = cur.model_dump()
+        for k, v in p_dict.items():
+            if v is None: p_dict[k] = False
+            
         attr = PERM_MAPPING[p_key][0]
-        p_dict = cur.model_dump(exclude_none=True)
-        p_dict[attr] = not getattr(cur, attr, False)
+        p_dict[attr] = not p_dict.get(attr, False)
         new_p = ChatPermissions(**p_dict)
         await bot.set_chat_permissions(g_id, new_p)
         await callback.message.edit_reply_markup(reply_markup=get_permissions_keyboard(g_id, new_p))
     except: 
-        await callback.answer("❌ El bot necesita ser admin con permisos completos.", show_alert=True)
+        await callback.answer("❌ Error. El bot necesita permisos completos.", show_alert=True)
 
+# --- LOCK / UNLOCK CON CONTRASEÑA ---
 @router.callback_query(F.data.startswith("close_"))
-async def close_chat_cb(callback: CallbackQuery):
-    try:
-        await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=False))
-        await callback.answer("🔒 Modo Estricto Activado.", show_alert=True)
-    except: pass
+async def close_chat_cb(callback: CallbackQuery, state: FSMContext):
+    g_id = int(callback.data.split("_")[1])
+    await state.set_state(BotStates.waiting_for_pwd_close)
+    await state.update_data(group_id=g_id, panel_msg_id=callback.message.message_id)
+    await callback.message.edit_text("🔒 <b>Modo Estricto</b>\nEscribe la contraseña <code>OTM</code> para confirmar el cierre del grupo.", reply_markup=get_back_keyboard(g_id))
+
+@router.message(BotStates.waiting_for_pwd_close)
+async def process_pwd_close(message: Message, state: FSMContext):
+    data = await state.get_data()
+    group_id, panel_msg_id = data.get("group_id"), data.get("panel_msg_id")
+    await message.delete()
+    if message.text.strip() == "OTM":
+        await bot.set_chat_permissions(group_id, ChatPermissions(can_send_messages=False))
+        await bot.edit_message_text("✅ <b>Modo Estricto Activado.</b> El grupo ha sido cerrado.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+    else:
+        await bot.edit_message_text("❌ Contraseña incorrecta. Operación cancelada.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+    await state.clear()
 
 @router.callback_query(F.data.startswith("open_"))
-async def open_chat_cb(callback: CallbackQuery):
-    try:
-        await bot.set_chat_permissions(int(callback.data.split("_")[1]), ChatPermissions(can_send_messages=True, can_send_photos=True, can_send_videos=True, can_send_documents=True, can_send_audios=True, can_send_voice_notes=True, can_send_other_messages=True))
-        await callback.answer("🔓 Modo Libre Activado.", show_alert=True)
-    except: pass
+async def open_chat_cb(callback: CallbackQuery, state: FSMContext):
+    g_id = int(callback.data.split("_")[1])
+    await state.set_state(BotStates.waiting_for_pwd_open)
+    await state.update_data(group_id=g_id, panel_msg_id=callback.message.message_id)
+    await callback.message.edit_text("🔓 <b>Modo Libre</b>\nEscribe la contraseña <code>OTM</code> para confirmar la apertura del grupo.", reply_markup=get_back_keyboard(g_id))
+
+@router.message(BotStates.waiting_for_pwd_open)
+async def process_pwd_open(message: Message, state: FSMContext):
+    data = await state.get_data()
+    group_id, panel_msg_id = data.get("group_id"), data.get("panel_msg_id")
+    await message.delete()
+    if message.text.strip() == "OTM":
+        await bot.set_chat_permissions(group_id, ChatPermissions(can_send_messages=True, can_send_photos=True, can_send_videos=True, can_send_documents=True, can_send_audios=True, can_send_voice_notes=True, can_send_other_messages=True))
+        await bot.edit_message_text("✅ <b>Modo Libre Activado.</b> El grupo ha sido abierto.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+    else:
+        await bot.edit_message_text("❌ Contraseña incorrecta. Operación cancelada.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+    await state.clear()
 
 @router.callback_query(F.data.startswith("botperms_"))
 async def show_bot_perms_cb(callback: CallbackQuery):
@@ -680,9 +714,21 @@ async def help_cb(callback: CallbackQuery):
     texto = (
         "📖 <b>MANUAL DE OPERACIONES IMPERIAL</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "🔸 <b>Moderación:</b> <code>/muteimperio</code>, <code>/warnimperio</code>, <code>/delallimperio</code>.\n"
-        "🔸 <b>Filtro de Enlaces:</b> Se borra cualquier URL lisa, pero se permiten hipervínculos ('Crear enlace').\n"
-        "🔸 <b>Réplica Fantasma:</b> Usa <code>/s</code> o <code>.s</code> para que el bot replique tu mensaje y borre el tuyo."
+        "🔸 <b>/panelimperio</b> (en grupo): Genera acceso directo al panel privado.\n"
+        "🔸 <b>/delimperio</b>: Borra el mensaje al que respondes.\n"
+        "🔸 <b>/banimperio</b>: Expulsa y banea permanentemente al usuario.\n"
+        "🔸 <b>/unbanimperio</b>: Revoca el baneo de un usuario.\n"
+        "🔸 <b>/muteimperio [tiempo]</b>: Silencia temporalmente (ej. 30m, 2h, 1d).\n"
+        "🔸 <b>/unmuteimperio</b>: Restablece la voz al usuario.\n"
+        "🔸 <b>/warnimperio</b>: Aplica advertencia (3 warns = baneo automático).\n"
+        "🔸 <b>/unwarnimperio</b>: Limpia las advertencias del usuario.\n"
+        "🔸 <b>/delallimperio</b>: Purga el historial del usuario con opciones.\n"
+        "🔸 <b>/pinimperio</b>: Fija el mensaje seleccionado.\n"
+        "🔸 <b>/s o .s</b>: Réplica fantasma (el bot copia tu texto/archivo y borra el tuyo).\n"
+        "🔸 <b>/aportesimperio /topimperio</b>: Estadísticas y cuadro de honor semanal.\n"
+        "🔸 <b>/leyesimperio /reglasimperio</b>: Muestra el código de conducta (autodestrucción en 30s).\n"
+        "🔸 <b>Filtro de Enlaces:</b> Se borran automáticamente todos los links y enlaces del grupo.\n"
+        "🔸 <b>Anti-Bots:</b> Baneo automático a bots intrusos no autorizados."
     )
     await callback.message.edit_text(texto, reply_markup=get_back_keyboard(int(callback.data.split("_")[1])))
 
@@ -724,20 +770,18 @@ async def group_messages_processor(message: Message):
                 try: await message.delete(); return
                 except: pass
 
-        # 3. Filtro Inteligente Anti-Links (Rechaza URLs directas, PERMITE "Crear enlace")
+        # 3. Filtro de Enlaces (Borra todos los links)
         if content and not is_user_admin:
             has_plain_url = False
             entities = message.entities or message.caption_entities or []
             for entity in entities:
-                if entity.type == MessageEntityType.URL:
+                if entity.type in [MessageEntityType.URL, MessageEntityType.TEXT_LINK]:
                     has_plain_url = True
                     break
             
             if has_plain_url or LINK_REGEX.search(content):
-                is_custom_link = any(e.type == MessageEntityType.TEXT_LINK for e in entities)
-                if not is_custom_link:
-                    try: await message.delete(); return
-                    except: pass
+                try: await message.delete(); return
+                except: pass
         
         # 4. Limpieza Cíclica de 12hs y Estadísticas Semanales de Aportes
         if message.photo or message.video or message.document:
