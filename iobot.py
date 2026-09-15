@@ -79,6 +79,27 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
     except: return False
 
+async def promote_to_admin(chat_id: int, user_id: int) -> bool:
+    """Otorga todos los permisos de administrador en Telegram excepto el de agregar otros admins."""
+    try:
+        await bot.promote_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            is_anonymous=False,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_manage_video_chats=True,
+            can_restrict_members=True,
+            can_promote_members=False,  # ❌ PROHIBIDO AGREGAR ADMINS
+            can_change_info=True,
+            can_invite_users=True,
+            can_pin_messages=True
+        )
+        return True
+    except Exception as e:
+        logging.error(f"No se pudo promover al usuario {user_id}: {e}")
+        return False
+        
 # ================= INTERFAZ PROFESIONAL =================
 def get_main_keyboard(group_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -317,6 +338,41 @@ async def repeat_cmd(message: Message):
             await message.delete()
         except: pass
 
+@router.message(Command("promotestaff"))
+async def sync_staff_admins(message: Message):
+    """Promueve a todos los miembros autorizados registrados a Admins de Telegram."""
+    if message.chat.type in ["group", "supergroup"] and await is_admin(message.chat.id, message.from_user.id):
+        # Lista de IDs predesignados que proporcionaste
+        PRESET_STAFF_IDS = {
+            7452819858, 8864888335, 8043542215, 6630522163,
+            5142196200, 8556221763, 6592321736, 8266066936,
+            8539721902, 8218799451, 8661328934
+        }
+        
+        # Registrar e importar IDs en la BD del grupo
+        await groups_col.update_one(
+            {"_id": message.chat.id},
+            {"$addToSet": {"authorized_users": {"$each": list(PRESET_STAFF_IDS)}}},
+            upsert=True
+        )
+        
+        group_data = await groups_col.find_one({"_id": message.chat.id})
+        staff_list = group_data.get("authorized_users", []) if group_data else list(PRESET_STAFF_IDS)
+        
+        success_count = 0
+        for uid in staff_list:
+            if await promote_to_admin(message.chat.id, uid):
+                success_count += 1
+            await asyncio.sleep(0.5) # Evitar límites de velocidad de Telegram
+            
+        msg = await message.reply(
+            f"👑 <b>Sincronización de Staff Completada:</b>\n"
+            f"Se promovieron <code>{success_count}/{len(staff_list)}</code> usuarios a Administradores con permisos completos (sin permiso de añadir admins)."
+        )
+        await asyncio.sleep(10)
+        await msg.delete()
+        await message.delete()
+        
 # ================= MÓDULO: APORTES SEMANALES CON GRÁFICO IMPERIAL =================
 @router.message(Command("aportes"))
 async def check_stats_cmd(message: Message):
@@ -472,7 +528,8 @@ async def addid_cb(callback: CallbackQuery, state: FSMContext):
 
 @router.message(BotStates.waiting_for_id)
 async def process_new_id(message: Message, state: FSMContext):
-    data = await state.get_data(); group_id, panel_msg_id = data.get("group_id"), data.get("panel_msg_id")
+    data = await state.get_data()
+    group_id, panel_msg_id = data.get("group_id"), data.get("panel_msg_id")
     await message.delete() 
     try:
         new_id = int(message.text.strip())
@@ -484,6 +541,7 @@ async def process_new_id(message: Message, state: FSMContext):
             
         date_added = datetime.now().strftime("%d/%m/%Y")
         
+        # 1. Guardar en Base de Datos
         await groups_col.update_one(
             {"_id": group_id}, 
             {
@@ -492,7 +550,17 @@ async def process_new_id(message: Message, state: FSMContext):
             }, 
             upsert=True
         )
-        await bot.edit_message_text(f"✅ <b>Personal Autorizado:</b>\nEl ID <code>{new_id}</code> ({name}) se agregó al Staff.", chat_id=message.chat.id, message_id=panel_msg_id, reply_markup=get_main_keyboard(group_id))
+        
+        # 2. Promover como Administrador oficial en Telegram
+        promoted = await promote_to_admin(group_id, new_id)
+        status_msg = "y se le otorgaron permisos de Admin en Telegram." if promoted else "(no se pudo otorgar Admin en Telegram, asegúrate de que el bot sea creador/admin del grupo)."
+
+        await bot.edit_message_text(
+            f"✅ <b>Personal Autorizado:</b>\nEl ID <code>{new_id}</code> ({name}) se agregó al Staff {status_msg}", 
+            chat_id=message.chat.id, 
+            message_id=panel_msg_id, 
+            reply_markup=get_main_keyboard(group_id)
+        )
     except ValueError: pass
     finally: await state.clear()
 
@@ -757,13 +825,25 @@ async def group_messages_processor(message: Message):
                     await message.delete()
                 except: pass
                 return 
+
+        # Obtención de datos del grupo en MongoDB
+        group_data = await groups_col.find_one({"_id": message.chat.id})
+        authorized_users = group_data.get("authorized_users", []) if group_data else []
+        all_staff_ids = set(authorized_users).union(DESIGNATED_USERS)
+
+        # 1.5 Auto-Promoción de Staff si envía un mensaje y no es Admin oficial en Telegram
+        if message.from_user.id in all_staff_ids:
+            try:
+                member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+                if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await promote_to_admin(message.chat.id, message.from_user.id)
+            except Exception: pass
         
         content = message.text or message.caption or ""
         is_user_admin = await is_admin(message.chat.id, message.from_user.id)
         
         # 2. Filtro de Lista Negra (Blacklist)
         if content and not is_user_admin:
-            group_data = await groups_col.find_one({"_id": message.chat.id})
             blacklist = group_data.get("blacklist", []) if group_data else []
             content_lower = content.lower()
             if any(badword in content_lower for badword in blacklist):
@@ -806,7 +886,7 @@ async def group_messages_processor(message: Message):
                     {"$set": {"count": 1, "name": message.from_user.first_name}}, 
                     upsert=True
                 )
-
+                
 # ================= RENDER Y EJECUCIÓN =================
 async def handle(request): return web.Response(text="Bot of Imperio Otomano is running smoothly on MongoDB!")
 
