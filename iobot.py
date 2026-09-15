@@ -80,20 +80,24 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
     except: return False
 
 async def promote_to_admin(chat_id: int, user_id: int) -> bool:
-    """Otorga todos los permisos de administrador en Telegram excepto el de agregar otros admins."""
+    """Otorga todos los privilegios de administrador en Telegram excepto Ser Anónimo y Añadir Admins."""
     try:
         await bot.promote_chat_member(
             chat_id=chat_id,
             user_id=user_id,
-            is_anonymous=False,
-            can_manage_chat=True,
-            can_delete_messages=True,
-            can_manage_video_chats=True,
-            can_restrict_members=True,
-            can_promote_members=False,  # ❌ PROHIBIDO AGREGAR ADMINS
-            can_change_info=True,
-            can_invite_users=True,
-            can_pin_messages=True
+            is_anonymous=False,           # ❌ Desactivado (No anónimo)
+            can_promote_members=False,     # ❌ Desactivado (No añadir admins)
+            can_manage_chat=True,          # ✅ Activo (Gestionar chat)
+            can_delete_messages=True,      # ✅ Activo (Eliminar mensajes)
+            can_manage_video_chats=True,   # ✅ Activo (Gestionar streams en directo)
+            can_restrict_members=True,     # ✅ Activo (Expulsar / Restringir usuarios)
+            can_change_info=True,          # ✅ Activo (Editar info del grupo)
+            can_invite_users=True,         # ✅ Activo (Añadir usuarios)
+            can_pin_messages=True,         # ✅ Activo (Fijar mensajes)
+            can_post_stories=True,         # ✅ Activo (Publicar historias)
+            can_edit_stories=True,         # ✅ Activo (Editar historias)
+            can_delete_stories=True,       # ✅ Activo (Eliminar historias de otros)
+            can_manage_topics=True         # ✅ Activo (Editar temas / etiquetas)
         )
         return True
     except Exception as e:
