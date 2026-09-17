@@ -599,35 +599,34 @@ async def top_stats_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    x_labels, names_legend, data_points = [], [], []
+    x_labels, data_points = [], []
     bg_colors, border_colors = [], []
 
     for idx, user in enumerate(top_users, 1):
         raw_name = user.get("name", "Anónimo")
-        safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:15]
+        safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:14]
         u_count = user.get("count", 0)
 
+        # Paleta jerárquica imperial
         if idx == 1:
             badge = "🥇"
-            bg = "rgba(245, 158, 11, 0.95)"      # Oro resplandeciente
+            bg = "rgba(245, 158, 11, 0.85)"      # Oro imperial
             border = "#FDE047"
         elif idx == 2:
             badge = "🥈"
-            bg = "rgba(226, 232, 240, 0.90)"     # Plata brillante
-            border = "#FFFFFF"
+            bg = "rgba(148, 163, 184, 0.85)"     # Plata
+            border = "#F1F5F9"
         elif idx == 3:
             badge = "🥉"
-            bg = "rgba(217, 119, 6, 0.85)"      # Bronce forjado
+            bg = "rgba(217, 119, 6, 0.85)"      # Bronce
             border = "#FBBF24"
         else:
             badge = f"#{idx:02d}"
-            bg = "rgba(225, 29, 72, 0.80)"       # Carmesí Imperial
+            bg = "rgba(225, 29, 72, 0.75)"       # Carmesí
             border = "#FB7185"
 
         text += f"{badge} <b>{safe_name}</b> ➜ <code>{u_count:,}</code> aportes\n"
-
-        # Eje X: identificador limpio estilo podio
-        x_labels.append(f"{badge}\n{safe_name[:7]}")
+        x_labels.append(f"{badge}\n{safe_name[:8]}")
         data_points.append(u_count)
         bg_colors.append(bg)
         border_colors.append(border)
@@ -638,58 +637,70 @@ async def top_stats_cmd(message: Message):
         "👑 <i>¡Honor y gloria a los pilares del Imperio!</i>"
     )
 
-    # Marcador final de flecha en el último valor
-    point_radii = [0] * (len(data_points) - 1) + [7]
+    # Construcción de datasets dinámicos
+    datasets = []
 
-    # Gráfico vertical descendente con curva de tendencia (Dark Modern Glass)
+    # Curva de tendencia descendente (solo si hay 2 o más usuarios para trazarla)
+    if len(data_points) >= 2:
+        point_radii = [0] * (len(data_points) - 1) + [6]
+        datasets.append({
+            "type": "line",
+            "data": data_points,
+            "borderColor": "#FBBF24",
+            "borderWidth": 3,
+            "fill": False,
+            "tension": 0.35,
+            "pointRadius": point_radii,
+            "pointBackgroundColor": "#F59E0B",
+            "pointBorderColor": "#FFFFFF",
+            "pointBorderWidth": 2,
+            "order": 1
+        })
+
+    # Barras estilizadas con límite estricto de grosor
+    datasets.append({
+        "type": "bar",
+        "data": data_points,
+        "backgroundColor": bg_colors,
+        "borderColor": border_colors,
+        "borderWidth": 1.5,
+        "borderRadius": 8,
+        "borderSkipped": "bottom",
+        "maxBarThickness": 48,
+        "barPercentage": 0.6,
+        "categoryPercentage": 0.7,
+        "order": 2
+    })
+
     chart_config = {
         "type": "bar",
         "data": {
             "labels": x_labels,
-            "datasets": [
-                {
-                    "type": "line",
-                    "data": data_points,
-                    "borderColor": "rgba(251, 191, 36, 0.95)",
-                    "borderWidth": 3.5,
-                    "fill": False,
-                    "tension": 0.35,
-                    "pointRadius": point_radii,
-                    "pointBackgroundColor": "#F59E0B",
-                    "pointBorderColor": "#FFFFFF",
-                    "pointBorderWidth": 2,
-                    "order": 1
-                },
-                {
-                    "type": "bar",
-                    "data": data_points,
-                    "backgroundColor": bg_colors,
-                    "borderColor": border_colors,
-                    "borderWidth": 1.5,
-                    "borderRadius": 10,
-                    "borderSkipped": "bottom",
-                    "order": 2
-                }
-            ]
+            "datasets": datasets
         },
         "options": {
             "legend": {"display": False},
             "layout": {
-                "padding": {"top": 35, "bottom": 15, "left": 15, "right": 25}
+                "padding": {"top": 40, "bottom": 10, "left": 20, "right": 20}
             },
             "plugins": {
                 "datalabels": {
                     "display": True,
                     "anchor": "end",
                     "align": "top",
-                    "offset": 4,
+                    "offset": 6,
                     "color": "#F8FAFC",
                     "font": {"size": 13, "weight": "bold"}
                 }
             },
             "scales": {
                 "xAxes": [{
-                    "gridLines": {"display": False, "drawBorder": False},
+                    "gridLines": {
+                        "display": False,
+                        "drawBorder": True,
+                        "color": "#475569",
+                        "lineWidth": 2
+                    },
                     "ticks": {
                         "fontColor": "#CBD5E1",
                         "fontSize": 12,
@@ -700,14 +711,16 @@ async def top_stats_cmd(message: Message):
                     "display": False,
                     "ticks": {
                         "beginAtZero": True,
-                        "suggestedMax": max(data_points, default=10) * 1.18
+                        "suggestedMax": max(data_points, default=5) * 1.25
                     }
                 }]
             }
         }
     }
 
-    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=750&h=420&bkg=rgb(11,15,25)"
+    encoded = urllib.parse.quote(json.dumps(chart_config))
+    url = f"https://quickchart.io/chart?c={encoded}&w=680&h=380&bkg=rgb(15,23,42)"
+
     try:
         await bot.send_photo(chat_id=message.chat.id, photo=url, caption=text)
     except Exception:
