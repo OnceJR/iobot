@@ -589,53 +589,99 @@ async def top_stats_cmd(message: Message):
     if not top_users:
         return await message.reply("📉 <b>Sin actividad:</b> No hay aportes registrados durante esta semana.")
 
+    total_aportes = sum(u.get("count", 0) for u in top_users)
+    week_num = datetime.now().strftime("%V")
+    year_num = datetime.now().year
+
     text = (
-        f"🏛️ <b>CUADRO DE HONOR SEMANAL</b>\n"
-        f"<i>Semana de corte: {datetime.now().strftime('%V / %Y')}</i>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        "🏛️ <b>CUADRO DE HONOR IMPERIAL</b> 🏛️\n"
+        f"⚔️ <i>Semana {week_num} • Ciclo {year_num}</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
-    
+
     labels, data_points = [], []
+    bg_colors, border_colors = [], []
+
     for idx, user in enumerate(top_users, 1):
-        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"<b>{idx}.</b>"
-        u_name = user.get("name", "Anónimo")
+        raw_name = user.get("name", "Anónimo")
+        safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:14]
         u_count = user.get("count", 0)
-        text += f"{medal} <code>{u_name[:14]:<14}</code> ➜ <b>{u_count}</b> aportes\n"
-        labels.append(u_name[:10])
+
+        # Asignación de insignias y paleta cromática de podio
+        if idx == 1:
+            rank = "🥇"
+            bg = "rgba(234, 179, 8, 0.90)"     # Oro imperial
+            border = "#FACC15"
+        elif idx == 2:
+            rank = "🥈"
+            bg = "rgba(203, 213, 225, 0.85)"   # Plata brillante
+            border = "#E2E8F0"
+        elif idx == 3:
+            rank = "🥉"
+            bg = "rgba(217, 119, 6, 0.85)"     # Bronce bruñido
+            border = "#F59E0B"
+        else:
+            rank = f"<b>#{idx:02d}</b>"
+            bg = "rgba(185, 28, 28, 0.75)"     # Carmesí imperial
+            border = "#EF4444"
+
+        text += f"{rank} <b>{safe_name}</b> ➜ <code>{u_count:,}</code> aportes\n"
+
+        labels.append(safe_name[:12])
         data_points.append(u_count)
+        bg_colors.append(bg)
+        border_colors.append(border)
 
-    text += "\n<i>El contenido multimedia es depurado cíclicamente cada 12 horas.</i>"
+    text += (
+        "\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 <b>Volumen Élite (Top 10):</b> <code>{total_aportes:,}</code> envíos\n"
+        "👑 <i>¡Honor y gloria a los pilares del Imperio!</i>"
+    )
 
-    # QuickChart Engine con estética Dark Slate / Gold
+    # Configuración QuickChart: Visualización Dark Slate / Paleta Dinámica
     chart_config = {
         "type": "horizontalBar",
         "data": {
             "labels": labels,
             "datasets": [{
-                "label": "Aportes",
                 "data": data_points,
-                "backgroundColor": "rgba(220, 38, 38, 0.8)",
-                "borderColor": "rgba(234, 179, 8, 1)",
-                "borderWidth": 1.5,
-                "borderRadius": 4
+                "backgroundColor": bg_colors,
+                "borderColor": border_colors,
+                "borderWidth": 1.5
             }]
         },
         "options": {
             "legend": {"display": False},
-            "title": {
-                "display": True,
-                "text": "Líderes de Contenido Semanal",
-                "fontColor": "#EAB308",
-                "fontSize": 15
+            "layout": {
+                "padding": {"left": 10, "right": 35, "top": 10, "bottom": 10}
+            },
+            "plugins": {
+                "datalabels": {
+                    "display": True,
+                    "anchor": "end",
+                    "align": "right",
+                    "color": "#F8FAFC",
+                    "font": {"weight": "bold", "size": 13}
+                }
             },
             "scales": {
-                "xAxes": [{"ticks": {"beginAtZero": True, "fontColor": "#9CA3AF"}}],
-                "yAxes": [{"ticks": {"fontColor": "#F3F4F6", "fontSize": 11}}]
+                "xAxes": [{
+                    "display": False,
+                    "ticks": {"beginAtZero": True}
+                }],
+                "yAxes": [{
+                    "gridLines": {"display": False, "drawBorder": False},
+                    "ticks": {
+                        "fontColor": "#E2E8F0",
+                        "fontSize": 13,
+                        "fontStyle": "bold"
+                    }
+                }]
             }
         }
     }
 
-    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=650&h=350&bkg=rgb(17,24,39)"
+    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=700&h=380&bkg=rgb(15,23,42)"
     try:
         await bot.send_photo(chat_id=message.chat.id, photo=url, caption=text)
     except Exception:
