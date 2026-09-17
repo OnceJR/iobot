@@ -599,89 +599,115 @@ async def top_stats_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    labels, data_points = [], []
+    x_labels, names_legend, data_points = [], [], []
     bg_colors, border_colors = [], []
 
     for idx, user in enumerate(top_users, 1):
         raw_name = user.get("name", "Anónimo")
-        safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:14]
+        safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:15]
         u_count = user.get("count", 0)
 
-        # Asignación de insignias y paleta cromática de podio
         if idx == 1:
-            rank = "🥇"
-            bg = "rgba(234, 179, 8, 0.90)"     # Oro imperial
-            border = "#FACC15"
+            badge = "🥇"
+            bg = "rgba(245, 158, 11, 0.95)"      # Oro resplandeciente
+            border = "#FDE047"
         elif idx == 2:
-            rank = "🥈"
-            bg = "rgba(203, 213, 225, 0.85)"   # Plata brillante
-            border = "#E2E8F0"
+            badge = "🥈"
+            bg = "rgba(226, 232, 240, 0.90)"     # Plata brillante
+            border = "#FFFFFF"
         elif idx == 3:
-            rank = "🥉"
-            bg = "rgba(217, 119, 6, 0.85)"     # Bronce bruñido
-            border = "#F59E0B"
+            badge = "🥉"
+            bg = "rgba(217, 119, 6, 0.85)"      # Bronce forjado
+            border = "#FBBF24"
         else:
-            rank = f"<b>#{idx:02d}</b>"
-            bg = "rgba(185, 28, 28, 0.75)"     # Carmesí imperial
-            border = "#EF4444"
+            badge = f"#{idx:02d}"
+            bg = "rgba(225, 29, 72, 0.80)"       # Carmesí Imperial
+            border = "#FB7185"
 
-        text += f"{rank} <b>{safe_name}</b> ➜ <code>{u_count:,}</code> aportes\n"
+        text += f"{badge} <b>{safe_name}</b> ➜ <code>{u_count:,}</code> aportes\n"
 
-        labels.append(safe_name[:12])
+        # Eje X: identificador limpio estilo podio
+        x_labels.append(f"{badge}\n{safe_name[:7]}")
         data_points.append(u_count)
         bg_colors.append(bg)
         border_colors.append(border)
 
     text += (
         "\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 <b>Volumen Élite (Top 10):</b> <code>{total_aportes:,}</code> envíos\n"
+        f"📦 <b>Volumen Élite:</b> <code>{total_aportes:,}</code> envíos acumulados\n"
         "👑 <i>¡Honor y gloria a los pilares del Imperio!</i>"
     )
 
-    # Configuración QuickChart: Visualización Dark Slate / Paleta Dinámica
+    # Marcador final de flecha en el último valor
+    point_radii = [0] * (len(data_points) - 1) + [7]
+
+    # Gráfico vertical descendente con curva de tendencia (Dark Modern Glass)
     chart_config = {
-        "type": "horizontalBar",
+        "type": "bar",
         "data": {
-            "labels": labels,
-            "datasets": [{
-                "data": data_points,
-                "backgroundColor": bg_colors,
-                "borderColor": border_colors,
-                "borderWidth": 1.5
-            }]
+            "labels": x_labels,
+            "datasets": [
+                {
+                    "type": "line",
+                    "data": data_points,
+                    "borderColor": "rgba(251, 191, 36, 0.95)",
+                    "borderWidth": 3.5,
+                    "fill": False,
+                    "tension": 0.35,
+                    "pointRadius": point_radii,
+                    "pointBackgroundColor": "#F59E0B",
+                    "pointBorderColor": "#FFFFFF",
+                    "pointBorderWidth": 2,
+                    "order": 1
+                },
+                {
+                    "type": "bar",
+                    "data": data_points,
+                    "backgroundColor": bg_colors,
+                    "borderColor": border_colors,
+                    "borderWidth": 1.5,
+                    "borderRadius": 10,
+                    "borderSkipped": "bottom",
+                    "order": 2
+                }
+            ]
         },
         "options": {
             "legend": {"display": False},
             "layout": {
-                "padding": {"left": 10, "right": 35, "top": 10, "bottom": 10}
+                "padding": {"top": 35, "bottom": 15, "left": 15, "right": 25}
             },
             "plugins": {
                 "datalabels": {
                     "display": True,
                     "anchor": "end",
-                    "align": "right",
+                    "align": "top",
+                    "offset": 4,
                     "color": "#F8FAFC",
-                    "font": {"weight": "bold", "size": 13}
+                    "font": {"size": 13, "weight": "bold"}
                 }
             },
             "scales": {
                 "xAxes": [{
-                    "display": False,
-                    "ticks": {"beginAtZero": True}
-                }],
-                "yAxes": [{
                     "gridLines": {"display": False, "drawBorder": False},
                     "ticks": {
-                        "fontColor": "#E2E8F0",
-                        "fontSize": 13,
+                        "fontColor": "#CBD5E1",
+                        "fontSize": 12,
                         "fontStyle": "bold"
+                    }
+                }],
+                "yAxes": [{
+                    "display": False,
+                    "ticks": {
+                        "beginAtZero": True,
+                        "suggestedMax": max(data_points, default=10) * 1.18
                     }
                 }]
             }
         }
     }
 
-    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=700&h=380&bkg=rgb(15,23,42)"
+    url = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(chart_config))}&w=750&h=420&bkg=rgb(11,15,25)"
     try:
         await bot.send_photo(chat_id=message.chat.id, photo=url, caption=text)
     except Exception:
