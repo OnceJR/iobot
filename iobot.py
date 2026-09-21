@@ -18,6 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    ChatMemberAdministrator,
     ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -55,7 +56,6 @@ warns_col = db.warns
 cleanup_queue_col = db.cleanup_queue
 
 # Caché en memoria (TTL) para reducir llamadas a Telegram y Mongo
-# Evita rate-limits de Telegram en grupos de alto tráfico
 _ADMIN_CACHE: Dict[Tuple[int, int], Tuple[bool, datetime]] = {}
 _BLACKLIST_CACHE: Dict[int, Tuple[List[str], datetime]] = {}
 CACHE_TTL = timedelta(minutes=5)
@@ -104,6 +104,79 @@ def invalidate_blacklist_cache(chat_id: int):
     _BLACKLIST_CACHE.pop(chat_id, None)
 
 # =====================================================================
+# GESTIÓN SILENCIOSA DE STAFF EN TELEGRAM
+# =====================================================================
+async def promote_staff(chat_id: int, user_id: int, custom_title: str = "Staff") -> bool:
+    """
+    Otorga rango administrativo silenciosamente en Telegram.
+    Habilita can_promote_members para permitir la gestión y edición de etiquetas (títulos).
+    """
+    try:
+        await bot.promote_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_restrict_members=True,
+            can_invite_users=True,
+            can_pin_messages=True,
+            can_manage_video_chats=True,
+            can_promote_members=True,  # Permite editar y crear etiquetas/admins
+            can_change_info=False,
+            is_anonymous=False
+        )
+
+        if custom_title:
+            try:
+                await bot.set_chat_administrator_custom_title(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    custom_title=custom_title[:16]
+                )
+            except TelegramBadRequest:
+                pass
+        return True
+    except Exception as e:
+        logger.warning(f"No se pudo promover al usuario {user_id} en {chat_id}: {e}")
+        return False
+
+async def sync_existing_staff(chat_id: int, default_title: str = "Staff") -> dict:
+    """
+    Recorre el staff registrado en MongoDB y actualiza silenciosamente sus permisos
+    en Telegram si aún no disponen de la capacidad de editar etiquetas.
+    """
+    group_data = await groups_col.find_one({"_id": chat_id}, {"authorized_users": 1})
+    if not group_data or not group_data.get("authorized_users"):
+        return {"updated": 0, "skipped": 0, "failed": 0}
+
+    staff_ids = group_data["authorized_users"]
+    stats = {"updated": 0, "skipped": 0, "failed": 0}
+
+    for user_id in staff_ids:
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            if member.status == ChatMemberStatus.CREATOR:
+                stats["skipped"] += 1
+                continue
+
+            # Si ya tiene el permiso, se salta para evitar llamadas innecesarias
+            if isinstance(member, ChatMemberAdministrator) and getattr(member, "can_promote_members", False):
+                stats["skipped"] += 1
+                continue
+
+            success = await promote_staff(chat_id, user_id, custom_title=default_title)
+            if success:
+                stats["updated"] += 1
+            else:
+                stats["failed"] += 1
+
+            await asyncio.sleep(0.3)
+        except Exception:
+            stats["failed"] += 1
+
+    return stats
+
+# =====================================================================
 # DICCIONARIOS DE PERMISOS
 # =====================================================================
 PERM_MAPPING = {
@@ -121,7 +194,7 @@ PERM_MAPPING = {
 ADMIN_PERMS = {
     "can_delete_messages": "Borrar Mensajes",
     "can_restrict_members": "Sancionar Usuarios",
-    "can_promote_members": "Promover Administradores",
+    "can_promote_members": "Promover / Editar Etiquetas",
     "can_change_info": "Modificar Ajustes",
     "can_invite_users": "Gestionar Enlaces",
     "can_pin_messages": "Fijar Mensajes"
@@ -202,11 +275,9 @@ async def execute_cleanup(chat_id: int) -> int:
     for i in range(0, len(message_ids), chunk_size):
         chunk = message_ids[i:i + chunk_size]
         try:
-            # delete_messages arrojará TelegramBadRequest si hay mensajes de más de 48h
             await bot.delete_messages(chat_id, chunk)
             total_purged += len(chunk)
         except TelegramBadRequest:
-            # Fallback seguro: eliminación individual de mensajes permitidos
             for mid in chunk:
                 try:
                     await bot.delete_message(chat_id, mid)
@@ -220,7 +291,6 @@ async def execute_cleanup(chat_id: int) -> int:
         
         await asyncio.sleep(0.5)
 
-    # Eliminar registros ya procesados de la cola
     await cleanup_queue_col.delete_many({"chat_id": chat_id, "message_id": {"$in": message_ids}})
     await groups_col.update_one(
         {"_id": chat_id},
@@ -285,6 +355,27 @@ async def link_group_panel(message: Message):
         f"└── <b>Estado:</b> <code>SESIÓN SINCRONIZADA</code>",
         reply_markup=kb
     )
+
+@router.message(Command("syncstaff"))
+async def sync_staff_cmd(message: Message):
+    """Sincroniza permisos de etiquetas a todo el staff sin dejar rastro en el grupo."""
+    if message.chat.type not in ["group", "supergroup"] or not await is_admin(message.chat.id, message.from_user.id, bot):
+        return
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    res = await sync_existing_staff(message.chat.id, default_title="Staff")
+    notice = await message.answer(
+        f"⚡ <b>Sincronización de Staff Completada:</b>\n"
+        f"• Actualizados (etiquetas activas): <code>{res['updated']}</code>\n"
+        f"• Sin cambios necesarios: <code>{res['skipped']}</code>\n"
+        f"• Fallos de API: <code>{res['failed']}</code>"
+    )
+    await asyncio.sleep(5)
+    await notice.delete()
 
 @router.message(Command("del"))
 async def delete_cmd(message: Message):
@@ -402,7 +493,6 @@ async def unmute_cmd(message: Message):
 
     target = message.reply_to_message.from_user
     try:
-        # Restablece permisos completos según ChatPermissions modernos
         await bot.restrict_chat_member(
             message.chat.id,
             target.id,
@@ -524,7 +614,6 @@ async def process_purge_action(callback: CallbackQuery):
         return await callback.message.delete()
 
     try:
-        # revoke_messages=True limpia el historial reciente del infractor en el chat
         await bot.ban_chat_member(chat_id, target_id, revoke_messages=True)
         if action == "msgs":
             await bot.unban_chat_member(chat_id, target_id)
@@ -607,22 +696,21 @@ async def top_stats_cmd(message: Message):
         safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")[:14]
         u_count = user.get("count", 0)
 
-        # Paleta jerárquica imperial
         if idx == 1:
             badge = "🥇"
-            bg = "rgba(245, 158, 11, 0.85)"      # Oro imperial
+            bg = "rgba(245, 158, 11, 0.85)"
             border = "#FDE047"
         elif idx == 2:
             badge = "🥈"
-            bg = "rgba(148, 163, 184, 0.85)"     # Plata
+            bg = "rgba(148, 163, 184, 0.85)"
             border = "#F1F5F9"
         elif idx == 3:
             badge = "🥉"
-            bg = "rgba(217, 119, 6, 0.85)"      # Bronce
+            bg = "rgba(217, 119, 6, 0.85)"
             border = "#FBBF24"
         else:
             badge = f"#{idx:02d}"
-            bg = "rgba(225, 29, 72, 0.75)"       # Carmesí
+            bg = "rgba(225, 29, 72, 0.75)"
             border = "#FB7185"
 
         text += f"{badge} <b>{safe_name}</b> ➜ <code>{u_count:,}</code> aportes\n"
@@ -637,10 +725,7 @@ async def top_stats_cmd(message: Message):
         "👑 <i>¡Honor y gloria a los pilares del Imperio!</i>"
     )
 
-    # Construcción de datasets dinámicos
     datasets = []
-
-    # Curva de tendencia descendente (solo si hay 2 o más usuarios para trazarla)
     if len(data_points) >= 2:
         point_radii = [0] * (len(data_points) - 1) + [6]
         datasets.append({
@@ -657,7 +742,6 @@ async def top_stats_cmd(message: Message):
             "order": 1
         })
 
-    # Barras estilizadas con límite estricto de grosor
     datasets.append({
         "type": "bar",
         "data": data_points,
@@ -800,7 +884,7 @@ async def back_to_dashboard(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.answer("Error cargando el menú principal.", show_alert=True)
 
-# --- CIERRE Y APERTURA CON CONFIRMACIÓN RÁPIDA (UX Sin Claves Expuestas) ---
+# --- CIERRE Y APERTURA CON CONFIRMACIÓN RÁPIDA ---
 @router.callback_query(F.data.startswith("lock_confirm_"))
 async def lock_confirm_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[2])
@@ -889,7 +973,6 @@ async def toggle_perm_cb(callback: CallbackQuery):
         cur = chat.permissions or ChatPermissions()
         p_dict = cur.model_dump()
         
-        # Invertir el booleano
         target_attr = PERM_MAPPING[key][0]
         p_dict[target_attr] = not p_dict.get(target_attr, False)
         
@@ -915,7 +998,7 @@ async def show_bot_perms_cb(callback: CallbackQuery):
     except Exception as e:
         await callback.answer(f"Error consultando bot: {e}", show_alert=True)
 
-# --- MÓDULO DE STAFF ---
+# --- MÓDULO DE STAFF ACTUALIZADO ---
 @router.callback_query(F.data.startswith("staffmenu_"))
 async def staff_menu_cb(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[1])
@@ -924,10 +1007,28 @@ async def staff_menu_cb(callback: CallbackQuery):
             InlineKeyboardButton(text="➕ Añadir Staff", callback_data=f"addid_{group_id}"),
             InlineKeyboardButton(text="➖ Remover Staff", callback_data=f"rmid_{group_id}")
         ],
-        [InlineKeyboardButton(text="👑 Lista de Staff Autorizado", callback_data=f"viewstaff_{group_id}")],
+        [
+            InlineKeyboardButton(text="🔄 Sincronizar Permisos Staff", callback_data=f"syncstaffmenu_{group_id}"),
+            InlineKeyboardButton(text="👑 Lista de Staff", callback_data=f"viewstaff_{group_id}")
+        ],
         [InlineKeyboardButton(text="◀️ Volver al Panel", callback_data=f"back_{group_id}")]
     ])
     await callback.message.edit_text("👥 <b>GESTIÓN DE STAFF INTERNO</b>\nElija una operación:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("syncstaffmenu_"))
+async def sync_staff_menu_cb(callback: CallbackQuery):
+    group_id = int(callback.data.split("_")[1])
+    await callback.answer("⏳ Actualizando permisos en silencio...", show_alert=False)
+    res = await sync_existing_staff(group_id, default_title="Staff")
+    await callback.message.edit_text(
+        f"⚡ <b>Sincronización de Staff Finalizada</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Actualizados (etiquetas activadas):</b> <code>{res['updated']}</code>\n"
+        f"• <b>Sin cambios necesarios:</b> <code>{res['skipped']}</code>\n"
+        f"• <b>Errores / Fallos:</b> <code>{res['failed']}</code>\n\n"
+        f"<i>Los miembros actualizados ya pueden gestionar etiquetas de miembros.</i>",
+        reply_markup=get_back_kb(group_id)
+    )
 
 @router.callback_query(F.data.startswith("addid_"))
 async def add_staff_start(callback: CallbackQuery, state: FSMContext):
@@ -936,7 +1037,7 @@ async def add_staff_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(group_id=group_id, msg_id=callback.message.message_id)
     await callback.message.edit_text(
         "✍️ <b>Envía el Telegram User ID del nuevo operador.</b>\n"
-        "<i>Obtendrá acceso a funciones administrativas del bot.</i>",
+        "<i>Se le otorgará rango administrativo en Telegram con permisos para editar etiquetas de miembros.</i>",
         reply_markup=get_back_kb(group_id)
     )
 
@@ -947,6 +1048,7 @@ async def add_staff_finish(message: Message, state: FSMContext):
     await message.delete()
 
     if not message.text.strip().isdigit():
+        await state.clear()
         return
 
     new_id = int(message.text.strip())
@@ -956,6 +1058,7 @@ async def add_staff_finish(message: Message, state: FSMContext):
     except Exception:
         name = "Operador"
 
+    # 1. Guardar en MongoDB
     await groups_col.update_one(
         {"_id": group_id},
         {
@@ -966,9 +1069,13 @@ async def add_staff_finish(message: Message, state: FSMContext):
     )
     _ADMIN_CACHE.pop((group_id, new_id), None)
     await state.clear()
-    
+
+    # 2. Ascenso silencioso en Telegram con facultad de editar etiquetas/admins
+    promoted = await promote_staff(group_id, new_id, custom_title="Staff")
+    promo_status = "y ascendido en Telegram con control de etiquetas" if promoted else "(no se pudo ascender en Telegram, revisa los permisos del bot)"
+
     await bot.edit_message_text(
-        f"✅ <b>Personal Registrado:</b>\n<code>{name}</code> (<code>{new_id}</code>) fue agregado al Staff.",
+        f"✅ <b>Personal Registrado:</b>\n<code>{name}</code> (<code>{new_id}</code>) fue agregado al Staff {promo_status}.",
         chat_id=message.chat.id,
         message_id=msg_id,
         reply_markup=get_main_dashboard_kb(group_id)
@@ -1003,6 +1110,22 @@ async def remove_staff_finish(message: Message, state: FSMContext):
     )
     _ADMIN_CACHE.pop((group_id, target_id), None)
     await state.clear()
+
+    # Degradar silenciosamente en Telegram
+    try:
+        await bot.promote_chat_member(
+            chat_id=group_id,
+            user_id=target_id,
+            can_manage_chat=False,
+            can_delete_messages=False,
+            can_restrict_members=False,
+            can_promote_members=False,
+            can_change_info=False,
+            can_invite_users=False,
+            can_pin_messages=False
+        )
+    except Exception:
+        pass
 
     await bot.edit_message_text(
         f"🗑️ <b>Privilegios Revocados:</b>\nID <code>{target_id}</code> removido del Staff.",
@@ -1136,6 +1259,7 @@ async def guide_menu(callback: CallbackQuery):
         "📖 <b>MANUAL TÁCTICO DE OPERACIONES</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "• <code>/panel</code>: Invoca la consola central en privado.\n"
+        "• <code>/syncstaff</code>: Sincroniza permisos de etiquetas al staff en silencio.\n"
         "• <code>/del</code>: Elimina el mensaje referenciado.\n"
         "• <code>/ban</code>: Expulsa permanentemente a un usuario.\n"
         "• <code>/unban [ID]</code>: Revoca una expulsión activa.\n"
@@ -1190,12 +1314,11 @@ async def central_message_traffic_controller(message: Message):
     content = message.text or message.caption or ""
 
     if not sender_is_admin and content:
-        # 2. Filtro de Lista Negra con coincidencia de palabra completa (\bword\b)
+        # 2. Filtro de Lista Negra con coincidencia exacta de palabra
         blacklist = await get_cached_blacklist(message.chat.id)
         if blacklist:
             content_lower = content.lower()
             for pattern in blacklist:
-                # Evita falsos positivos como 'disputar' activando 'puta'
                 if re.search(rf'\b{re.escape(pattern)}\b', content_lower):
                     try:
                         await message.delete()
@@ -1221,21 +1344,18 @@ async def central_message_traffic_controller(message: Message):
         chat_id = message.chat.id
         user_id = message.from_user.id
 
-        # Insertar en la cola separada para evitar desbordar el documento del grupo
         await cleanup_queue_col.insert_one({
             "chat_id": chat_id,
             "message_id": message.message_id,
             "created_at": datetime.now()
         })
 
-        # Inicializar timer si es el primer elemento
         await groups_col.update_one(
             {"_id": chat_id},
             {"$setOnInsert": {"next_cleanup": datetime.now() + timedelta(hours=12)}},
             upsert=True
         )
 
-        # Registro atómico de estadísticas semanales por usuario y grupo
         await stats_col.update_one(
             {"chat_id": chat_id, "user_id": user_id, "week": current_week},
             {
@@ -1262,14 +1382,21 @@ async def start_background_tasks():
 
 async def main():
     dp.include_router(router)
-    await start_background_tasks()
     
-    # Crear índices en colecciones críticas para consultas en milisegundos
+    # 1. Liberar Webhooks antes de arrancar cualquier worker o servidor
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook eliminado con éxito. Modo Polling activo.")
+    except Exception as e:
+        logger.error(f"Fallo al eliminar webhook: {e}")
+
+    # 2. Inicializar base de datos y tareas de fondo
     await cleanup_queue_col.create_index([("chat_id", 1), ("message_id", 1)])
     await stats_col.create_index([("chat_id", 1), ("week", 1), ("count", -1)])
+    await start_background_tasks()
     
-    logger.info("Iniciando ImperioBot con arquitectura blindada...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    # 3. Arrancar polling
+    logger.info("Iniciando ImperioBot...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
